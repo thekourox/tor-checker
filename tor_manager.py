@@ -11,6 +11,8 @@ import shutil
 import platform
 import json
 import re
+import psutil
+import random
 
 from rich.live import Live
 from rich.table import Table
@@ -30,7 +32,20 @@ SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=100000" # 100KB payl
 TIMEOUT = 15
 LATENCY_THRESHOLD = 8.0
 SPEED_THRESHOLD_KBS = 5.0
-MAX_INSTANCES = 20
+MAX_INSTANCES = 190
+
+def detect_hardware_tier():
+    try:
+        ram_gb = psutil.virtual_memory().total / (1024**3)
+    except:
+        ram_gb = 4.0
+    if ram_gb < 6.0:
+        return 'LOW'
+    elif ram_gb < 12.0:
+        return 'MID'
+    return 'HIGH'
+
+HARDWARE_TIER = detect_hardware_tier()
 
 # Global state for the dashboard
 dashboard_state = {
@@ -95,6 +110,14 @@ class TorInstance:
             'ClientUseIPv6': '0',
             'ClientPreferIPv6ORPort': '0'
         }
+        
+        if HARDWARE_TIER == 'LOW':
+            config['MaxMemInQueues'] = '15 MB'
+            config['NumCPUs'] = '1'
+            config['AvoidDiskWrites'] = '1'
+        elif HARDWARE_TIER == 'MID':
+            config['MaxMemInQueues'] = '40 MB'
+            config['NumCPUs'] = '2'
         
         # Pick the absolute fastest node to start with
         if self.available_fingerprints:
@@ -223,6 +246,7 @@ def measure_speed_and_ping(instance):
     return success, ttfb, speed_kbs
 
 def monitor_instance(instance):
+    time.sleep(random.uniform(0.1, 15.0))
     proxies = {
         'http': f'socks5h://127.0.0.1:{instance.socks_port}',
         'https': f'socks5h://127.0.0.1:{instance.socks_port}'
@@ -369,7 +393,7 @@ def generate_table():
         # Auto-rotate pages every 5 seconds
         current_page = (int(time.time() / 5) % total_pages) + 1 if total_pages > 0 else 1
         
-        title = "🌍 Tor VPN Backend - Live Dashboard"
+        title = f"🌍 Tor VPN Backend - Dashboard [RAM Tier: {HARDWARE_TIER}]"
         if total_pages > 1:
             title += f" (Page {current_page}/{total_pages} - Auto Rotating)"
             
@@ -397,6 +421,11 @@ def generate_table():
         return table
 
 def main():
+    if HARDWARE_TIER == 'LOW':
+        threading.stack_size(262144)
+    elif HARDWARE_TIER == 'MID':
+        threading.stack_size(524288)
+        
     signal.signal(signal.SIGINT, cleanup_and_exit)
     signal.signal(signal.SIGTERM, cleanup_and_exit)
 
@@ -469,7 +498,12 @@ def main():
             instances.append(instance)
             # Start instance in a background thread to allow UI to update
             threading.Thread(target=instance.start, daemon=True).start()
-            time.sleep(0.5) # Stagger startups to prevent CPU spike when 15 Tors parse files
+            if HARDWARE_TIER == 'LOW':
+                time.sleep(1.0)
+            elif HARDWARE_TIER == 'MID':
+                time.sleep(0.5)
+            else:
+                time.sleep(0.2)
             
         # Give instances a moment to start
         time.sleep(2)
