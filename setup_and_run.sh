@@ -67,7 +67,12 @@ echo "Step 2: Cleaning up any hanging background processes..."
 pkill -f "python tor_manager.py" > /dev/null 2>&1
 pkill -f "python3 tor_manager.py" > /dev/null 2>&1
 pkill -x "tor" > /dev/null 2>&1
+
+echo "Cleaning up old cache and state files (preventing OS conflicts)..."
+rm -rf ./data/tor_data_* > /dev/null 2>&1
+rm -rf ./data/discovery_data > /dev/null 2>&1
 echo ""
 
 echo "Step 3: Launching Interactive Dashboard..."
+ulimit -n 65535 > /dev/null 2>&1
 python3 tor_manager.py

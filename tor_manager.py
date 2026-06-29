@@ -115,14 +115,15 @@ class TorInstance:
                 tor_cmd=self.tor_cmd,
                 take_ownership=True,
                 init_msg_handler=handle_init_msg,
-                timeout=300
+                timeout=None
             )
             self.active = True
             dashboard_state['instances'][self.country]['status'] = "🟢 Online. Testing..."
             logger.info(f"[{self.country}] Tor instance successfully started and bootstrapped.")
         except Exception as e:
             logger.error(f"[{self.country}] Failed to start Tor: {e}")
-            dashboard_state['instances'][self.country]['status'] = "🔴 Failed to Start"
+            err_msg = str(e).split('\n')[0][:30]
+            dashboard_state['instances'][self.country]['status'] = f"🔴 {err_msg}"
             self.active = False
             
     def request_new_ip(self, reason):
