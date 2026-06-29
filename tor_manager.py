@@ -114,7 +114,8 @@ class TorInstance:
                 config=config,
                 tor_cmd=self.tor_cmd,
                 take_ownership=True,
-                init_msg_handler=handle_init_msg
+                init_msg_handler=handle_init_msg,
+                timeout=300
             )
             self.active = True
             dashboard_state['instances'][self.country]['status'] = "🟢 Online. Testing..."
@@ -294,7 +295,8 @@ def discover_exit_countries(tor_cmd):
         config=config,
         tor_cmd=tor_cmd,
         take_ownership=True,
-        init_msg_handler=handle_init_msg
+        init_msg_handler=handle_init_msg,
+        timeout=300
     )
     
     country_fingerprints = {}
