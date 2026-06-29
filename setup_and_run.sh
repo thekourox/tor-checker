@@ -20,9 +20,22 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
+# Check for pip3
+if ! command -v pip3 >/dev/null 2>&1; then
+    echo "[!] pip3 is not installed. Attempting to install python3-pip..."
+    if [ "$EUID" -ne 0 ]; then
+        sudo apt-get update && sudo apt-get install -y python3-pip
+    else
+        apt-get update && apt-get install -y python3-pip
+    fi
+    if ! command -v pip3 >/dev/null 2>&1; then
+        echo "[Error] Failed to install pip3. Please manually run: apt-get install python3-pip"
+        exit 1
+    fi
+fi
+
 echo "Step 1: Installing Python requirements..."
-# Force install globally bypassing the OS protection
-pip3 install -r requirements.txt --break-system-packages >/dev/null 2>&1 || pip3 install -r requirements.txt >/dev/null 2>&1 || pip install -r requirements.txt >/dev/null 2>&1
+pip3 install -r requirements.txt --break-system-packages || pip3 install -r requirements.txt || { echo "[Error] Failed to install requirements!"; exit 1; }
 echo "[OK] Requirements installed successfully."
 echo ""
 
