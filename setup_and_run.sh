@@ -18,7 +18,7 @@ source venv/bin/activate
 
 echo ""
 echo "Step 2: Installing Python requirements..."
-pip install -r requirements.txt >/dev/null 2>&1
+pip3 install -r requirements.txt >/dev/null 2>&1 || pip install -r requirements.txt >/dev/null 2>&1
 echo "[OK] Requirements installed."
 echo ""
 
@@ -31,8 +31,9 @@ fi
 
 echo "Step 3: Cleaning up any hanging background processes..."
 pkill -f "python tor_manager.py" > /dev/null 2>&1
+pkill -f "python3 tor_manager.py" > /dev/null 2>&1
 pkill -x "tor" > /dev/null 2>&1
 echo ""
 
 echo "Step 4: Launching Interactive Dashboard..."
-python tor_manager.py
+python3 tor_manager.py || python tor_manager.py
