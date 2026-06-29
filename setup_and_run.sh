@@ -5,6 +5,15 @@ echo "   Tor VPN Backend Dashboard Setup (Linux)"
 echo "=============================================================="
 echo ""
 
+if [ ! -f "tor/tor" ] && [ ! -f "Tor/tor" ]; then
+    echo "Step 0: Downloading and extracting Tor Expert Bundle..."
+    curl -sSL "https://dist.torproject.org/torbrowser/15.0.17/tor-expert-bundle-linux-x86_64-15.0.17.tar.gz" -o tor.tar.gz
+    tar -xzf tor.tar.gz
+    rm tor.tar.gz
+    echo "[OK] Tor downloaded and extracted."
+    echo ""
+fi
+
 # Check for python3
 if ! command -v python3 >/dev/null 2>&1; then
     echo "[Error] python3 is not installed! Please install python3."

@@ -4,6 +4,15 @@ echo   Tor VPN Backend Dashboard Setup (Windows)
 echo ==============================================================
 echo.
 
+if not exist tor\tor.exe if not exist Tor\tor.exe (
+    echo Step 0: Downloading and extracting Tor Expert Bundle...
+    curl -sSL "https://dist.torproject.org/torbrowser/15.0.17/tor-expert-bundle-windows-x86_64-15.0.17.tar.gz" -o tor.tar.gz
+    tar -xzf tor.tar.gz
+    del tor.tar.gz
+    echo [OK] Tor downloaded and extracted.
+    echo.
+)
+
 echo Step 1: Installing Python requirements...
 pip install -r requirements.txt >nul 2>&1
 echo [OK] Requirements installed.
