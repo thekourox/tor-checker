@@ -30,7 +30,7 @@ SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=100000" # 100KB payl
 TIMEOUT = 15
 LATENCY_THRESHOLD = 8.0
 SPEED_THRESHOLD_KBS = 5.0
-MAX_INSTANCES = 50
+MAX_INSTANCES = 20
 
 # Global state for the dashboard
 dashboard_state = {
@@ -115,7 +115,7 @@ class TorInstance:
             self.process = stem.process.launch_tor_with_config(
                 config=config,
                 tor_cmd=self.tor_cmd,
-                take_ownership=True,
+                take_ownership=False,
                 init_msg_handler=handle_init_msg,
                 timeout=None
             )
@@ -310,7 +310,7 @@ def discover_exit_countries(tor_cmd):
     discovery_process = stem.process.launch_tor_with_config(
         config=config,
         tor_cmd=tor_cmd,
-        take_ownership=True,
+        take_ownership=False,
         init_msg_handler=handle_init_msg,
         timeout=300
     )
