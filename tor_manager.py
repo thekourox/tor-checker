@@ -84,8 +84,8 @@ class TorInstance:
                         pass
         
         config = {
-            'SocksPort': str(self.socks_port),
-            'ControlPort': str(self.control_port),
+            'SocksPort': f'127.0.0.1:{self.socks_port}',
+            'ControlPort': f'127.0.0.1:{self.control_port}',
             'CookieAuthentication': '1',
             'DataDirectory': self.data_dir.replace('\\', '/'),
             'StrictNodes': '1',
@@ -244,8 +244,6 @@ instances = []
 
 def cleanup_and_exit(signum, frame):
     logger.info("Termination signal received. Cleaning up...")
-    for instance in instances:
-        instance.stop()
         
     if platform.system() == 'Windows':
         try:
@@ -276,8 +274,8 @@ def discover_exit_countries(tor_cmd):
     os.makedirs(discovery_data_dir, exist_ok=True)
     
     config = {
-        'SocksPort': 'auto',
-        'ControlPort': '9049',
+        'SocksPort': '127.0.0.1:auto',
+        'ControlPort': '127.0.0.1:9049',
         'CookieAuthentication': '1',
         'DataDirectory': discovery_data_dir.replace('\\', '/'),
     }

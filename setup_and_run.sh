@@ -64,13 +64,15 @@ if [ -n "$TOR_BIN" ]; then
 fi
 
 echo "Step 2: Cleaning up any hanging background processes..."
-pkill -f "python tor_manager.py" > /dev/null 2>&1
-pkill -f "python3 tor_manager.py" > /dev/null 2>&1
-pkill -x "tor" > /dev/null 2>&1
+systemctl stop tor > /dev/null 2>&1
+pkill -9 -f "python tor_manager.py" > /dev/null 2>&1
+pkill -9 -f "python3 tor_manager.py" > /dev/null 2>&1
+pkill -9 -x "tor" > /dev/null 2>&1
 
 echo "Cleaning up old cache and state files (preventing OS conflicts)..."
 rm -rf ./data/tor_data_* > /dev/null 2>&1
 rm -rf ./data/discovery_data > /dev/null 2>&1
+sleep 3
 echo ""
 
 echo "Step 3: Launching Interactive Dashboard..."
