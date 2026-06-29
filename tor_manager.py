@@ -142,7 +142,8 @@ class TorInstance:
                 time.sleep(3)
             except Exception as e:
                 logger.error(f"[{self.country}] Failed to SETCONF: {e}")
-                dashboard_state['instances'][self.country]['status'] = "🔴 Optimization Failed"
+                err_msg = str(e).split('\n')[0][:30]
+                dashboard_state['instances'][self.country]['status'] = f"🔴 Opt Fail: {err_msg}"
         else:
             dashboard_state['instances'][self.country]['status'] = "🟡 Auto-Healing (Random)..."
             try:
@@ -153,6 +154,8 @@ class TorInstance:
                 time.sleep(3)
             except Exception as e:
                 logger.error(f"[{self.country}] Failed to send NEWNYM: {e}")
+                err_msg = str(e).split('\n')[0][:30]
+                dashboard_state['instances'][self.country]['status'] = f"🔴 Opt Fail: {err_msg}"
             
     def stop(self):
         self.active = False
