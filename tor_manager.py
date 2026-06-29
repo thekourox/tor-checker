@@ -91,7 +91,9 @@ class TorInstance:
             'StrictNodes': '1',
             'Log': 'NOTICE stdout',
             'GeoIPFile': os.path.join(os.getcwd(), 'data', 'geoip').replace('\\', '/'),
-            'GeoIPv6File': os.path.join(os.getcwd(), 'data', 'geoip6').replace('\\', '/')
+            'GeoIPv6File': os.path.join(os.getcwd(), 'data', 'geoip6').replace('\\', '/'),
+            'ClientUseIPv6': '0',
+            'ClientPreferIPv6ORPort': '0'
         }
         
         # Pick the absolute fastest node to start with
@@ -107,7 +109,7 @@ class TorInstance:
             match = re.search(r'Bootstrapped (\d+)%', line)
             if match:
                 dashboard_state['instances'][self.country]['status'] = f"🟡 Bootstrapping {match.group(1)}%"
-            logger.debug(f"[{self.country}] {line}")
+            logger.info(f"[{self.country}] {line}")
 
         try:
             self.process = stem.process.launch_tor_with_config(
@@ -120,6 +122,15 @@ class TorInstance:
             self.active = True
             dashboard_state['instances'][self.country]['status'] = "🟢 Online. Testing..."
             logger.info(f"[{self.country}] Tor instance successfully started and bootstrapped.")
+
+            def drain_stdout(stream):
+                try:
+                    for _ in stream:
+                        pass
+                except:
+                    pass
+            if self.process and self.process.stdout:
+                threading.Thread(target=drain_stdout, args=(self.process.stdout,), daemon=True).start()
         except Exception as e:
             logger.error(f"[{self.country}] Failed to start Tor: {e}")
             err_msg = str(e).split('\n')[0][:30]
@@ -135,7 +146,7 @@ class TorInstance:
             dashboard_state['instances'][self.country]['status'] = f"🟡 Optimizing ({best_fingerprint[:8]})..."
             logger.info(f"[{self.country}] Auto-healing using specific high-bandwidth fingerprint: {best_fingerprint}")
             try:
-                with Controller.from_port(port=self.control_port) as controller:
+                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
                     controller.authenticate()
                     controller.set_conf('ExitNodes', f'${best_fingerprint}')
                     controller.signal(Signal.NEWNYM)
@@ -147,7 +158,7 @@ class TorInstance:
         else:
             dashboard_state['instances'][self.country]['status'] = "🟡 Auto-Healing (Random)..."
             try:
-                with Controller.from_port(port=self.control_port) as controller:
+                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
                     controller.authenticate()
                     controller.set_conf('ExitNodes', f'{{{self.country}}}')
                     controller.signal(Signal.NEWNYM)
@@ -278,6 +289,8 @@ def discover_exit_countries(tor_cmd):
         'ControlPort': '127.0.0.1:9049',
         'CookieAuthentication': '1',
         'DataDirectory': discovery_data_dir.replace('\\', '/'),
+        'ClientUseIPv6': '0',
+        'ClientPreferIPv6ORPort': '0'
     }
     
     if os.path.exists(geoip_path) and os.path.exists(geoip6_path):
@@ -292,6 +305,7 @@ def discover_exit_countries(tor_cmd):
         if match:
             dashboard_state['discovery_progress'] = int(match.group(1))
             dashboard_state['discovery_msg'] = f"Bootstrapping Discovery Node: {match.group(1)}%"
+        logger.info(f"[discovery] {line}")
 
     discovery_process = stem.process.launch_tor_with_config(
         config=config,
@@ -308,7 +322,7 @@ def discover_exit_countries(tor_cmd):
     logger.info("Tor bootstrapped. Reading network consensus...")
     
     try:
-        with Controller.from_port(port=9049) as controller:
+        with Controller.from_port(address='127.0.0.1', port=9049) as controller:
             controller.authenticate()
             statuses = controller.get_network_statuses()
             for desc in statuses:
