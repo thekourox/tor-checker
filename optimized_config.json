@@ -1,0 +1,188 @@
+{
+    "log": {
+        "loglevel": "warning"
+    },
+    "inbounds": [
+        {
+            "port": 443,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "b831381d-6324-4d53-ad4f-8cda48b30811",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "tls",
+                "tlsSettings": {
+                    "serverName": "template.example.com",
+                    "certificates": [
+                        {
+                            "certificateFile": "/path/to/cert",
+                            "keyFile": "/path/to/key"
+                        }
+                    ]
+                }
+            },
+            "tag": "inbound-vless-template"
+        },
+        {
+            "port": 20000,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "b831381d-6324-4d53-ad4f-8cda48b30811",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "tls",
+                "tlsSettings": {
+                    "serverName": "us.my-cdn-domain.com",
+                    "certificates": [
+                        {
+                            "certificateFile": "/path/to/cert",
+                            "keyFile": "/path/to/key"
+                        }
+                    ]
+                }
+            },
+            "tag": "inbound-vless-us"
+        },
+        {
+            "port": 20001,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "b831381d-6324-4d53-ad4f-8cda48b30811",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "tls",
+                "tlsSettings": {
+                    "serverName": "de.my-cdn-domain.com",
+                    "certificates": [
+                        {
+                            "certificateFile": "/path/to/cert",
+                            "keyFile": "/path/to/key"
+                        }
+                    ]
+                }
+            },
+            "tag": "inbound-vless-de"
+        },
+        {
+            "port": 20002,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "b831381d-6324-4d53-ad4f-8cda48b30811",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "tls",
+                "tlsSettings": {
+                    "serverName": "gb.my-cdn-domain.com",
+                    "certificates": [
+                        {
+                            "certificateFile": "/path/to/cert",
+                            "keyFile": "/path/to/key"
+                        }
+                    ]
+                }
+            },
+            "tag": "inbound-vless-gb"
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "tag": "direct"
+        },
+        {
+            "tag": "outbound-tor-us",
+            "protocol": "socks",
+            "settings": {
+                "servers": [
+                    {
+                        "address": "127.0.0.1",
+                        "port": 9050
+                    }
+                ]
+            }
+        },
+        {
+            "tag": "outbound-tor-de",
+            "protocol": "socks",
+            "settings": {
+                "servers": [
+                    {
+                        "address": "127.0.0.1",
+                        "port": 9051
+                    }
+                ]
+            }
+        },
+        {
+            "tag": "outbound-tor-gb",
+            "protocol": "socks",
+            "settings": {
+                "servers": [
+                    {
+                        "address": "127.0.0.1",
+                        "port": 9052
+                    }
+                ]
+            }
+        }
+    ],
+    "routing": {
+        "domainStrategy": "AsIs",
+        "rules": [
+            {
+                "type": "field",
+                "inboundTag": [
+                    "inbound-vless-gb"
+                ],
+                "outboundTag": "outbound-tor-gb"
+            },
+            {
+                "type": "field",
+                "inboundTag": [
+                    "inbound-vless-de"
+                ],
+                "outboundTag": "outbound-tor-de"
+            },
+            {
+                "type": "field",
+                "inboundTag": [
+                    "inbound-vless-us"
+                ],
+                "outboundTag": "outbound-tor-us"
+            },
+            {
+                "type": "field",
+                "network": "tcp,udp",
+                "outboundTag": "direct"
+            }
+        ]
+    }
+}
