@@ -219,17 +219,22 @@ def measure_speed_and_ping(instance):
     ttfb = 0
     speed_kbs = 0
     success = False
+    actual_country = None
     
-    # Measure TTFB (Ping)
+    # Measure TTFB (Ping) and get GeoIP
     try:
         start_time = time.time()
-        r = requests.get(TEST_URL, proxies=proxies, timeout=TIMEOUT, stream=True)
+        r = requests.get(TEST_URL, proxies=proxies, timeout=TIMEOUT)
         ttfb = time.time() - start_time
         if r.status_code == 200:
             success = True
+            for line in r.text.split('\n'):
+                if line.startswith('loc='):
+                    actual_country = line.split('=')[1].lower()
+                    break
     except Exception as e:
         logger.debug(f"[{instance.country}] Ping failed: {e}")
-        return False, 0, 0
+        return False, 0, 0, None
         
     # Measure Speed
     try:
@@ -243,7 +248,7 @@ def measure_speed_and_ping(instance):
         logger.debug(f"[{instance.country}] Speed test failed: {e}")
         pass
         
-    return success, ttfb, speed_kbs
+    return success, ttfb, speed_kbs, actual_country
 
 def monitor_instance(instance):
     time.sleep(random.uniform(0.1, 15.0))
@@ -252,9 +257,15 @@ def monitor_instance(instance):
         'https': f'socks5h://127.0.0.1:{instance.socks_port}'
     }
     while instance.active:
-        success, ttfb, speed_kbs = measure_speed_and_ping(instance)
+        success, ttfb, speed_kbs, actual_country = measure_speed_and_ping(instance)
         
         if success:
+            if actual_country and actual_country != instance.country:
+                logger.warning(f"[{instance.country}] Mismatched Country! Expected {instance.country}, got {actual_country}.")
+                instance.request_new_ip(f"Wrong Country ({actual_country.upper()})")
+                time.sleep(3)
+                continue
+                
             current_ip = get_current_ip(proxies)
             dashboard_state['instances'][instance.country]['ip'] = current_ip
             dashboard_state['instances'][instance.country]['ping'] = f"{ttfb:.2f} s"
