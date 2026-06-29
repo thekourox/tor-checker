@@ -70,8 +70,8 @@ pkill -9 -f "python3 tor_manager.py" > /dev/null 2>&1
 pkill -9 -x "tor" > /dev/null 2>&1
 
 echo "Cleaning up old cache and state files (preventing OS conflicts)..."
-rm -rf ./data/tor_data_* > /dev/null 2>&1
-rm -rf ./data/discovery_data > /dev/null 2>&1
+rm -rf ./tor_data > /dev/null 2>&1
+rm -f tor_fingerprints_cache.json > /dev/null 2>&1
 sleep 3
 echo ""
 
