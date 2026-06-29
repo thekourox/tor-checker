@@ -41,9 +41,26 @@ echo ""
 
 if [ -f "./Tor/tor" ]; then
     chmod +x ./Tor/tor
+    TOR_BIN="./Tor/tor"
 fi
 if [ -f "./tor/tor" ]; then
     chmod +x ./tor/tor
+    TOR_BIN="./tor/tor"
+fi
+
+if [ -n "$TOR_BIN" ]; then
+    if ! $TOR_BIN --version > /dev/null 2>&1; then
+        echo "[!] Missing Tor system dependencies (e.g. libevent). Installing..."
+        if [ "$EUID" -ne 0 ]; then
+            sudo apt-get update && sudo apt-get install -y libevent-dev
+        else
+            apt-get update && apt-get install -y libevent-dev
+        fi
+        if ! $TOR_BIN --version > /dev/null 2>&1; then
+            echo "[Error] Still missing dependencies. Please manually run: apt-get install libevent-dev"
+            exit 1
+        fi
+    fi
 fi
 
 echo "Step 2: Cleaning up any hanging background processes..."
