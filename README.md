@@ -1,62 +1,60 @@
-# Tor Proxy Manager
+# مدیریت هوشمند پروکسی‌های Tor (VPN Backend) 🌍
 
-This project provides a fully autonomous Python-based Tor Proxy Manager. It spins up multiple isolated Tor instances, binds them to specific countries (Exit Nodes), and continually monitors their latency and health. If a proxy is too slow or fails, it automatically requests a new IP to build a new circuit ("auto-healing").
+به این برنامه خوش آمدید! این برنامه یک سیستم کاملاً خودکار است که سرور (لینوکس یا ویندوز) شما را به یک **بک‌اند قدرتمند VPN** تبدیل می‌کند. 
 
-## 1. Prerequisites
+**این برنامه دقیقاً چه کار می‌کند؟**
+بدون اینکه نیاز باشد شما هیچ کار سختی انجام دهید، این برنامه شبکه جهانی اینترنت را اسکن می‌کند، ۱۵ کشوری که قوی‌ترین سرورهای Tor را دارند پیدا می‌کند و برای هر کدام از آن کشورها یک **پورت اختصاصی (SOCKS5)** روی سرور شما می‌سازد. همچنین به صورت خودکار قطعی‌ها را تشخیص داده و سرعت آن‌ها را در پس‌زمینه ترمیم (Auto-Heal) می‌کند!
 
-You will need **Python** installed on your system. If you don't have it, download and install it from [python.org](https://www.python.org/downloads/). During installation, make sure to check the box that says **"Add Python to PATH"**.
+---
 
-## 2. Downloading Tor (Direct Link)
+## 🚀 راهنمای نصب و اجرای بسیار ساده
 
-Since you do not have Tor installed, follow these steps to get the exact bundle needed:
+شما به هیچ دانش برنامه‌نویسی یا شبکه‌ای نیاز ندارید. فقط کافیست مراحل زیر را دنبال کنید:
 
-1. **Download the Windows Expert Bundle directly here:** 
-   👉 [https://www.torproject.org/dist/torbrowser/13.5.3/tor-expert-bundle-windows-x86_64-13.5.3.tar.gz](https://www.torproject.org/dist/torbrowser/13.5.3/tor-expert-bundle-windows-x86_64-13.5.3.tar.gz) 
-   *(Note: if that link is outdated, find the "Tor Expert Bundle" for Windows at [torproject.org/download/tor/](https://www.torproject.org/download/tor/))*
-2. Open the downloaded file (you may need a tool like 7-Zip or WinRAR if Windows doesn't extract `.tar.gz` natively).
-3. Inside, you will see a folder called `tor`. 
-4. Extract that entire `tor` folder directly into your project folder (`c:\Users\Kourosh\Documents\tor-checker`). 
-5. You should now have `c:\Users\Kourosh\Documents\tor-checker\tor\tor.exe` on your system.
+### ۱. آپلود روی سرور
+کل پوشه این پروژه (همین پوشه‌ای که الان داخلش هستید) را کپی کرده و روی سرور اصلی خود (خارج از ایران) قرار دهید.
 
-## 3. Installation
-
-Open your terminal or command prompt (cmd/PowerShell) in this project folder (`c:\Users\Kourosh\Documents\tor-checker`), and run the following command to install the required Python libraries:
-
+### ۲. اجرای برنامه (فقط با یک کلیک!)
+**اگر سرور شما لینوکس (Linux) است:**
+ترمینال را باز کنید و دستورات زیر را وارد کنید:
 ```bash
-pip install -r requirements.txt
+chmod +x setup_and_run.sh
+./setup_and_run.sh
 ```
 
-*(This will install `stem` for controlling Tor, `requests` for making HTTP calls, and `pysocks` for SOCKS proxy support).*
+**اگر سرور شما ویندوز (Windows) است:**
+فقط کافیست روی فایل `setup_and_run.bat` دوبار کلیک کنید!
 
-## 4. Running the Manager
+### ۳. صبر کنید تا جادو اتفاق بیفتد... ⏳
+برنامه ابتدا پیش‌نیازها را نصب کرده و سپس به مدت **۱ الی ۲ دقیقه** شبکه‌های جهانی را اسکن می‌کند. در نهایت، برنامه یک گزارش از پورت‌های ساخته شده، آی‌پی‌ها و کشورها به شما نمایش می‌دهد.
 
-Once everything is set up, you can start the manager by running:
+**تبریک!** برنامه اکنون در پس‌زمینه سرور شما در حال کار است و می‌توانید ترمینال را با خیال راحت ببندید.
 
-```bash
-python tor_manager.py
-```
+---
 
-### What happens when you run it?
-1. The script will spawn 3 isolated Tor processes configured for the US, Germany (DE), and France (FR).
-2. They will listen on SOCKS ports `9051`, `9053`, and `9055` respectively.
-3. It will create an isolated data folder (`tor_data/`) for each instance to avoid conflicts.
-4. It will continuously monitor the speed and latency of each proxy by downloading a small test file from Cloudflare.
-5. If the latency exceeds 3 seconds or the proxy fails, it connects to the Tor Control Port and automatically requests a new IP (`NEWNYM` signal).
-6. When you are done, press `Ctrl+C`. The script will gracefully shut down and run a Windows-specific command to ensure absolutely no `tor.exe` background tasks are left hanging!
+## 💻 چگونه به این پروکسی‌ها وصل شویم؟
+وقتی برنامه اجرا شد، یک فایل به نام `port_mapping.json` در کنار بقیه فایل‌ها ساخته می‌شود. این فایل به شما می‌گوید کدام پورت برای چه کشوری است (مثلاً پورت 9050 برای آمریکا، پورت 9051 برای آلمان و ...).
 
-## 5. Automated Testing
+حالا در تنظیمات مرورگر، تلگرام، کلاینت VPN یا کدهای خود، پروکسی را به این شکل تنظیم کنید:
+* **نوع پروکسی:** `SOCKS5`
+* **آی‌پی (Host):** `127.0.0.1` (اگر روی همان سرور هستید)
+* **پورت (Port):** `پورت دلخواه از لیست (مثلاً 9050)`
 
-While the main script is running, open a **new, separate** Command Prompt or PowerShell window in the exact same folder (`c:\Users\Kourosh\Documents\tor-checker`).
+---
 
-Run the automated test script to instantly check your proxies:
+## 🔄 آپدیت کردن دیتابیس کشورها (GeoIP)
+این برنامه برای تشخیص کشورها از دیتابیس آفلاین استفاده می‌کند (پوشه `data`). هر چند ماه یکبار، بنیاد Tor این دیتابیس را آپدیت می‌کند.
+شما برای دریافت جدیدترین آی‌پی‌ها هیچ کار سختی پیش رو ندارید!
+* **در لینوکس:** کافیست فایل `update_geoip.sh` را اجرا کنید.
+* **در ویندوز:** فایل `update_geoip.bat` را اجرا کنید.
+برنامه خودش جدیدترین دیتابیس‌ها را از سرورهای رسمی Tor دانلود و جایگزین می‌کند.
 
-```bash
-python test_proxies.py
-```
+---
 
-This will automatically ping through all your new proxies and output a simple result like this:
-```
-✅ Port 9051 -> Connected! Country: US | IP: 198.51.100.1 | Speed: 1.25 seconds
-✅ Port 9053 -> Connected! Country: DE | IP: 203.0.113.5 | Speed: 0.89 seconds
-❌ Port 9055 -> Failed to connect. Needs optimization.
-```
+## 🗂 فایل‌های لاگ (برای عیب‌یابی)
+دو فایل متنی در کنار برنامه ساخته می‌شود که هر لحظه می‌توانید آن‌ها را باز کنید و بخوانید:
+* **`manager_logs.txt`:** تمام کارهای هسته اصلی برنامه، قطع و وصل شدن‌ها و پینگ‌ها به زبان ساده در اینجا نوشته می‌شود.
+* **`test_logs.txt`:** آخرین وضعیت سلامت پروکسی‌ها و سرعت پاسخگویی آن‌ها در اینجا ثبت می‌شود.
+
+---
+*طراحی شده برای استفاده‌ی راحت، سریع و پایدار!*
