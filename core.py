@@ -142,6 +142,9 @@ class TorInstance:
         self.next_check_time = time.time() + 15  # Give it 15s to bootstrap initially
         self.currently_checking = False
         self.consecutive_failures = 0
+        
+        # Concurrency and Zombie protection
+        self.start_lock = threading.Lock()
 
         
         # Init dashboard state
@@ -153,78 +156,68 @@ class TorInstance:
         }
         
     def start(self):
-        logger.info(f"[{self.country}] Starting Tor instance on SOCKS {self.socks_port}, Control {self.control_port}...")
-        
-        if os.path.exists(self.data_dir):
-            shutil.rmtree(self.data_dir, ignore_errors=True)
-        os.makedirs(self.data_dir, exist_ok=True)
-        
-        discovery_data_dir = os.path.join(os.getcwd(), "tor_data", "discovery")
-        if os.path.exists(discovery_data_dir):
-            for filename in os.listdir(discovery_data_dir):
-                if filename.startswith("cached-"):
-                    src = os.path.join(discovery_data_dir, filename)
-                    dst = os.path.join(self.data_dir, filename)
-                    try:
-                        if os.path.isfile(src):
-                            shutil.copy2(src, dst)
-                    except Exception:
-                        pass
-        
-        bind_ip = '0.0.0.0' if platform.system() == 'Linux' else '127.0.0.1'
-        config = {
-            'SocksPort': f'{bind_ip}:{self.socks_port}',
-            'ControlPort': f'127.0.0.1:{self.control_port}',
-            'CookieAuthentication': '1',
-            'DataDirectory': self.data_dir.replace('\\', '/'),
-            'StrictNodes': '1',
-            'Log': 'NOTICE stdout',
-            'GeoIPFile': os.path.join(os.getcwd(), 'data', 'geoip').replace('\\', '/'),
-            'GeoIPv6File': os.path.join(os.getcwd(), 'data', 'geoip6').replace('\\', '/'),
-            'ClientUseIPv6': '0',
-            'ClientPreferIPv6ORPort': '0',
-            'EnforceDistinctSubnets': '0',
-            'ConnectionPadding': '0',
-            'ReducedConnectionPadding': '1',
-            'EntryNodes': '{nl},{de},{fr},{gb},{us},{ca}',
-            'KeepalivePeriod': '120',
-            'CircuitStreamTimeout': '15',
-            'ClientOnly': '1',
-            'FetchDirInfoEarly': '0',
-            'FetchDirInfoExtraEarly': '0',
-            'FetchUselessDescriptors': '0'
-        }
-        
-        config['MaxMemInQueues'] = f'{CONFIG_RAM_LIMIT_MB} MB'
-        if CONFIG_BW_LIMIT_KB > 0:
-            config['BandwidthRate'] = f'{CONFIG_BW_LIMIT_KB} KBytes'
-            config['BandwidthBurst'] = f'{CONFIG_BW_LIMIT_KB * 2} KBytes'
+        if not self.start_lock.acquire(blocking=False):
+            logger.warning(f"[{self.country}] Start already in progress. Ignoring duplicate start request.")
+            return
             
-        # Extreme Resource Minimization for all tiers
-        config['NumCPUs'] = '1'
-        config['AvoidDiskWrites'] = '1'
-        
-        if self.available_fingerprints:
-            best_fingerprint = self.available_fingerprints[0]
-            self.fingerprint_index = 1
-            config['ExitNodes'] = f'${best_fingerprint}'
-            logger.info(f"[{self.country}] Using optimal starting fingerprint: {best_fingerprint}")
-        else:
-            config['ExitNodes'] = f'{{{self.country}}}'
-
-        def handle_init_msg(line):
-            match = re.search(r'Bootstrapped (\d+)%', line)
-            if match:
-                dashboard_state['instances'][self.country]['status'] = f"🟡 Bootstrapping {match.group(1)}%"
-            logger.info(f"[{self.country}] {line}")
-
         try:
+            logger.info(f"[{self.country}] Starting Tor instance on SOCKS {self.socks_port}, Control {self.control_port}...")
+            
+            if os.path.exists(self.data_dir):
+                shutil.rmtree(self.data_dir, ignore_errors=True)
+            os.makedirs(self.data_dir, exist_ok=True)
+            
+            discovery_data_dir = os.path.join(os.getcwd(), "tor_data", "discovery")
+            if os.path.exists(discovery_data_dir):
+                for filename in os.listdir(discovery_data_dir):
+                    if filename.startswith("cached-"):
+                        src = os.path.join(discovery_data_dir, filename)
+                        dst = os.path.join(self.data_dir, filename)
+                        try:
+                            if os.path.isfile(src):
+                                shutil.copy2(src, dst)
+                        except Exception:
+                            pass
+            
+            bind_ip = '0.0.0.0' if platform.system() == 'Linux' else '127.0.0.1'
+            config = {
+                'SocksPort': f'{bind_ip}:{self.socks_port}',
+                'ControlPort': f'127.0.0.1:{self.control_port}',
+                'CookieAuthentication': '1',
+                'DataDirectory': self.data_dir.replace('\\', '/'),
+                'StrictNodes': '1',
+                'Log': 'NOTICE stdout',
+            }
+            
+            config['MaxMemInQueues'] = f'{CONFIG_RAM_LIMIT_MB} MB'
+            if CONFIG_BW_LIMIT_KB > 0:
+                config['BandwidthRate'] = f'{CONFIG_BW_LIMIT_KB} KBytes'
+                config['BandwidthBurst'] = f'{CONFIG_BW_LIMIT_KB * 2} KBytes'
+                
+            # Extreme Resource Minimization for all tiers
+            config['NumCPUs'] = '1'
+            config['AvoidDiskWrites'] = '1'
+            
+            if self.available_fingerprints:
+                best_fingerprint = self.available_fingerprints[0]
+                self.fingerprint_index = 1
+                config['ExitNodes'] = f'${best_fingerprint}'
+                logger.info(f"[{self.country}] Using optimal starting fingerprint: {best_fingerprint}")
+            else:
+                config['ExitNodes'] = f'{{{self.country}}}'
+
+            def handle_init_msg(line):
+                match = re.search(r'Bootstrapped (\d+)%', line)
+                if match:
+                    dashboard_state['instances'][self.country]['status'] = f"🟡 Bootstrapping {match.group(1)}%"
+                logger.info(f"[{self.country}] {line}")
+
             self.process = stem.process.launch_tor_with_config(
                 config=config,
                 tor_cmd=self.tor_cmd,
                 take_ownership=False,
                 init_msg_handler=handle_init_msg,
-                timeout=None
+                timeout=45
             )
             self.active = True
             dashboard_state['instances'][self.country]['status'] = "🟢 Online. Testing..."
@@ -238,15 +231,26 @@ class TorInstance:
                     pass
             if self.process and self.process.stdout:
                 threading.Thread(target=drain_stdout, args=(self.process.stdout,), daemon=True).start()
+                
         except Exception as e:
             logger.error(f"[{self.country}] Failed to start Tor: {e}")
-            err_msg = str(e).split('\\n')[0][:30]
+            err_msg = str(e).split('\n')[0][:30]
             dashboard_state['instances'][self.country]['status'] = f"🔴 {err_msg}"
             self.active = False
+            self.process = None
+        finally:
+            self.start_lock.release()
             
     def request_new_ip(self, reason):
         logger.info(f"[{self.country}] Requesting new IP. Reason: {reason}")
         
+        if not self.active or self.process is None:
+            self.fingerprint_index = (self.fingerprint_index + 1) % max(1, len(self.available_fingerprints))
+            self.stop()
+            time.sleep(1)
+            threading.Thread(target=self.start, daemon=True).start()
+            return
+
         if self.fingerprint_index < len(self.available_fingerprints):
             best_fingerprint = self.available_fingerprints[self.fingerprint_index]
             self.fingerprint_index += 1
@@ -260,20 +264,17 @@ class TorInstance:
                 time.sleep(3)
             except Exception as e:
                 logger.error(f"[{self.country}] Failed to SETCONF: {e}")
-                err_msg = str(e).split('\\n')[0][:30]
+                err_msg = str(e).split('\n')[0][:30]
                 dashboard_state['instances'][self.country]['status'] = f"🔴 Opt Fail: {err_msg}"
+                # If controller fails, force a hard restart
+                self.stop()
+                time.sleep(1)
+                threading.Thread(target=self.start, daemon=True).start()
         else:
-            dashboard_state['instances'][self.country]['status'] = "🟡 Auto-Healing (Random)..."
-            try:
-                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
-                    controller.authenticate()
-                    controller.set_conf('ExitNodes', f'{{{self.country}}}')
-                    controller.signal(Signal.NEWNYM)
-                time.sleep(3)
-            except Exception as e:
-                logger.error(f"[{self.country}] Failed to send NEWNYM: {e}")
-                err_msg = str(e).split('\\n')[0][:30]
-                dashboard_state['instances'][self.country]['status'] = f"🔴 Opt Fail: {err_msg}"
+            self.fingerprint_index = 0
+            self.stop()
+            time.sleep(1)
+            threading.Thread(target=self.start, daemon=True).start()
             
     def stop(self):
         self.active = False
@@ -389,10 +390,11 @@ def scheduler_worker(worker_id):
                         if instance_to_check.consecutive_failures >= 3:
                             dashboard_state['instances'][instance_to_check.country]['status'] = f"💤 Sleeping (5m) [Bad Country: {actual_country}]"
                             instance_to_check.stop()
+                            instance_to_check.consecutive_failures = 0
                             instance_to_check.next_check_time = time.time() + 300
                         else:
                             dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Wrong Country ({actual_country})"
-                            threading.Thread(target=instance_to_check.request_new_ip, args=(f"Wrong Country ({actual_country})",), daemon=True).start()
+                            instance_to_check.request_new_ip(f"Wrong Country ({actual_country})")
                             instance_to_check.next_check_time = time.time() + 10
                             
                         instance_to_check.currently_checking = False
@@ -413,10 +415,11 @@ def scheduler_worker(worker_id):
                     if instance_to_check.consecutive_failures >= 3:
                         dashboard_state['instances'][instance_to_check.country]['status'] = f"💤 Sleeping (5m) [Network Timeout]"
                         instance_to_check.stop()
+                        instance_to_check.consecutive_failures = 0
                         instance_to_check.next_check_time = time.time() + 300
                     else:
                         dashboard_state['instances'][instance_to_check.country]['status'] = f"🟡 Timeout. Retrying..."
-                        threading.Thread(target=instance_to_check.request_new_ip, args=(f"Ping Timeout",), daemon=True).start()
+                        instance_to_check.request_new_ip(f"Ping Timeout")
                         instance_to_check.next_check_time = time.time() + 10
 
                     instance_to_check.next_check_time = time.time() + 10
