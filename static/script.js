@@ -56,10 +56,8 @@ function updateTable(instances) {
         tr.innerHTML = `
             <td class="country-code" title="${country.toUpperCase()}">${getCountryName(country)}</td>
             <td>${data.port}</td>
-            <td>${data.ip}</td>
-            <td class="ip-location">${getCountryName(data.ip_location)}</td>
+            <td class="ip-location">${getFlagEmoji(country)} ${getCountryName(country)}</td>
             <td>${data.ping}</td>
-            <td>${data.speed}</td>
             <td><span class="status-dot ${statusDot}"></span> ${statusText}</td>
         `;
         instancesBody.appendChild(tr);

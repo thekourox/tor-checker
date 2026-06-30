@@ -143,10 +143,7 @@ class TorInstance:
         # Init dashboard state
         dashboard_state['instances'][self.country] = {
             'port': str(self.socks_port),
-            'ip': '...',
-            'ip_location': '...',
             'ping': '...',
-            'speed': '...',
             'status': '🟡 Bootstrapping...'
         }
         
@@ -279,79 +276,26 @@ class TorInstance:
                 logger.error(f"[{self.country}] Error while stopping process: {e}")
             logger.info(f"[{self.country}] Tor instance stopped.")
 
-def get_current_ip(proxies):
-    try:
-        r = requests.get("https://api.ipify.org", proxies=proxies, timeout=5)
-        if r.status_code == 200:
-            return r.text.strip()
-    except:
-        pass
-    return "Unknown IP"
-
-def measure_speed_and_ping(instance):
-    proxies = {
-        'http': f'socks5h://127.0.0.1:{instance.socks_port}',
-        'https': f'socks5h://127.0.0.1:{instance.socks_port}'
-    }
+def measure_ping(instance):
     ping_ms = 0
-    speed_kbs = 0
     success = False
-    actual_country = None
     
     try:
-        # 1. Pure TCP Ping (Fastest, accurate to Xray/3x-ui standard)
-        tcp_ping_ms = None
-        try:
-            s = socks.socksocket()
-            s.set_proxy(socks.SOCKS5, "127.0.0.1", instance.socks_port)
-            s.settimeout(10.0)
-            ping_start = time.time()
-            s.connect(("1.1.1.1", 80))
-            ping_end = time.time()
-            s.close()
-            tcp_ping_ms = int((ping_end - ping_start) * 1000)
-        except Exception as e:
-            pass
-            
-        # 2. Trace request to determine exact country and HTTP TTFB
-        start_time = time.time()
-        resp = requests.get('https://1.1.1.1/cdn-cgi/trace', proxies=proxies, timeout=15)
-        resp.raise_for_status()
-        http_ttfb_ms = int((time.time() - start_time) * 1000)
+        s = socks.socksocket()
+        s.set_proxy(socks.SOCKS5, "127.0.0.1", instance.socks_port)
+        s.settimeout(15.0)
         
-        ping_ms = tcp_ping_ms if tcp_ping_ms else http_ttfb_ms
+        ping_start = time.time()
+        s.connect(("www.google.com", 80))
+        ping_end = time.time()
+        s.close()
         
-        # Extract country code from loc=...
-        actual_country = None
-        for line in resp.text.splitlines():
-            if line.startswith('loc='):
-                actual_country = line.split('=')[1]
-                break
-                
-        if not actual_country or actual_country.lower() == 'xx':
-            try:
-                ipinfo_resp = requests.get('https://ipinfo.io/country', proxies=proxies, timeout=10)
-                if ipinfo_resp.status_code == 200:
-                    actual_country = ipinfo_resp.text.strip()
-            except:
-                pass
-        
+        ping_ms = int((ping_end - ping_start) * 1000)
         success = True
     except Exception as e:
-        logger.debug(f"[{instance.country}] Ping failed: {e}")
-        return False, 0, 0, None
+        success = False
         
-    try:
-        start_time = time.time()
-        r = requests.get(SPEED_TEST_URL, proxies=proxies, timeout=TIMEOUT)
-        if r.status_code == 200:
-            elapsed = time.time() - start_time
-            size_kb = len(r.content) / 1024
-            speed_kbs = size_kb / elapsed
-    except Exception as e:
-        logger.warning(f"[{instance.country}] Speed/Ping test failed: {e}")
-        
-    return success, ping_ms, speed_kbs, actual_country
+    return success, ping_ms
 
 def scheduler_worker(worker_id):
     logger.info(f"Worker {worker_id} started.")
@@ -371,53 +315,32 @@ def scheduler_worker(worker_id):
             continue
             
         try:
-            success, ping_ms, speed_kbs, actual_country = measure_speed_and_ping(instance_to_check)
+            success, ping_ms = measure_ping(instance_to_check)
             
-            if success:
-                instance_to_check.consecutive_failures = 0
-                actual_country_str = actual_country.upper() if actual_country else "Unknown"
-                if actual_country and actual_country != instance_to_check.country:
-                    logger.warning(f"[{instance_to_check.country}] Mismatched Country! Expected {instance_to_check.country}, got {actual_country}.")
-                    instance_to_check.request_new_ip(f"Wrong Country ({actual_country_str})")
-                    instance_to_check.next_check_time = time.time() + 10
-                    continue
-                    
-                proxies = {
-                    'http': f'socks5h://127.0.0.1:{instance_to_check.socks_port}',
-                    'https': f'socks5h://127.0.0.1:{instance_to_check.socks_port}'
-                }
-                current_ip = get_current_ip(proxies)
-                dashboard_state['instances'][instance_to_check.country]['ip'] = current_ip
-                dashboard_state['instances'][instance_to_check.country]['ip_location'] = actual_country_str
-                dashboard_state['instances'][instance_to_check.country]['ping'] = f"{ping_ms} ms"
-                dashboard_state['instances'][instance_to_check.country]['speed'] = f"{speed_kbs:.1f} KB/s"
-                
-                logger.info(f"[{instance_to_check.country}] Proxy healthy. IP: {current_ip}, Ping: {ping_ms} ms, Speed: {speed_kbs:.1f} KB/s")
-                
-                if ping_ms > (LATENCY_THRESHOLD * 1000):
-                    instance_to_check.request_new_ip(f"High Ping ({ping_ms}ms)")
-                    instance_to_check.next_check_time = time.time() + 10
-                elif speed_kbs < SPEED_THRESHOLD_KBS:
-                    instance_to_check.request_new_ip(f"Low Speed ({speed_kbs:.1f} KB/s)")
-                    instance_to_check.next_check_time = time.time() + 10
-                else:
-                    dashboard_state['instances'][instance_to_check.country]['status'] = "🟢 Optimized"
-                    instance_to_check.next_check_time = time.time() + CONFIG_PING_INTERVAL
-            else:
-                instance_to_check.consecutive_failures += 1
-                dashboard_state['instances'][instance_to_check.country]['ping'] = "Timeout"
-                dashboard_state['instances'][instance_to_check.country]['speed'] = "0.0 KB/s"
-                
-                if instance_to_check.consecutive_failures >= 5:
-                    dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Fatal Error. Rebooting Node..."
-                    logger.warning(f"[{instance_to_check.country}] Rebooting Tor instance entirely.")
-                    instance_to_check.stop()
+            with QUEUE_LOCK:
+                if success:
                     instance_to_check.consecutive_failures = 0
-                    threading.Thread(target=instance_to_check.start, daemon=True).start()
-                    instance_to_check.next_check_time = time.time() + 20
+                    dashboard_state['instances'][instance_to_check.country]['ping'] = f"{ping_ms} ms"
+                    dashboard_state['instances'][instance_to_check.country]['status'] = "🟢 Online"
+                    
+                    if ping_ms > (LATENCY_THRESHOLD * 1000):
+                        instance_to_check.request_new_ip(f"High Ping ({ping_ms}ms)")
+                        instance_to_check.next_check_time = time.time() + 10
+                    else:
+                        instance_to_check.next_check_time = time.time() + CONFIG_PING_INTERVAL
                 else:
-                    dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Failed ({instance_to_check.consecutive_failures}/5). Auto-Healing..."
-                    instance_to_check.request_new_ip("Connection Timeout")
+                    instance_to_check.consecutive_failures += 1
+                    dashboard_state['instances'][instance_to_check.country]['ping'] = "Timeout"
+                    
+                    if instance_to_check.consecutive_failures >= 5:
+                        dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Fatal Error. Rebooting Node..."
+                        instance_to_check.stop()
+                        instance_to_check.consecutive_failures = 0
+                        instance_to_check.fingerprint_index = 0
+                        threading.Thread(target=instance_to_check.start, daemon=True).start()
+                    else:
+                        dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Failed ({instance_to_check.consecutive_failures}/5). Auto-Healing..."
+                        threading.Thread(target=instance_to_check.request_new_ip, args=(f"Ping Failed",), daemon=True).start()
                     instance_to_check.next_check_time = time.time() + 10
         except Exception as e:
             logger.error(f"Worker {worker_id} error: {e}")
