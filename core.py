@@ -12,7 +12,7 @@ import platform
 import json
 import re
 import psutil
-import psutil
+import subprocess
 import random
 import socket
 import socks
