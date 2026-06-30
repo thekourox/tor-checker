@@ -14,6 +14,7 @@ import re
 import psutil
 import random
 import socket
+import socks
 socket.setdefaulttimeout(20)
 
 # Setup File Logging ONLY (No console spam)
@@ -277,16 +278,33 @@ def measure_speed_and_ping(instance):
         'http': f'socks5h://127.0.0.1:{instance.socks_port}',
         'https': f'socks5h://127.0.0.1:{instance.socks_port}'
     }
-    ttfb = 0
+    ping_ms = 0
     speed_kbs = 0
     success = False
     actual_country = None
     
     try:
+        # 1. Pure TCP Ping (Fastest, accurate to Xray/3x-ui standard)
+        tcp_ping_ms = None
+        try:
+            s = socks.socksocket()
+            s.set_proxy(socks.SOCKS5, "127.0.0.1", instance.socks_port)
+            s.settimeout(10.0)
+            ping_start = time.time()
+            s.connect(("1.1.1.1", 80))
+            ping_end = time.time()
+            s.close()
+            tcp_ping_ms = int((ping_end - ping_start) * 1000)
+        except Exception as e:
+            pass
+            
+        # 2. Trace request to determine exact country and HTTP TTFB
         start_time = time.time()
         resp = requests.get('https://1.1.1.1/cdn-cgi/trace', proxies=proxies, timeout=15)
         resp.raise_for_status()
-        ttfb = time.time() - start_time
+        http_ttfb_ms = int((time.time() - start_time) * 1000)
+        
+        ping_ms = tcp_ping_ms if tcp_ping_ms else http_ttfb_ms
         
         # Extract country code from loc=...
         actual_country = None
@@ -316,9 +334,9 @@ def measure_speed_and_ping(instance):
             size_kb = len(r.content) / 1024
             speed_kbs = size_kb / elapsed
     except Exception as e:
-        pass
+        logger.warning(f"[{instance.country}] Speed/Ping test failed: {e}")
         
-    return success, ttfb, speed_kbs, actual_country
+    return success, ping_ms, speed_kbs, actual_country
 
 def scheduler_worker(worker_id):
     logger.info(f"Worker {worker_id} started.")
@@ -338,7 +356,7 @@ def scheduler_worker(worker_id):
             continue
             
         try:
-            success, ttfb, speed_kbs, actual_country = measure_speed_and_ping(instance_to_check)
+            success, ping_ms, speed_kbs, actual_country = measure_speed_and_ping(instance_to_check)
             
             if success:
                 instance_to_check.consecutive_failures = 0
@@ -356,13 +374,13 @@ def scheduler_worker(worker_id):
                 current_ip = get_current_ip(proxies)
                 dashboard_state['instances'][instance_to_check.country]['ip'] = current_ip
                 dashboard_state['instances'][instance_to_check.country]['ip_location'] = actual_country_str
-                dashboard_state['instances'][instance_to_check.country]['ping'] = f"{ttfb:.2f} s"
+                dashboard_state['instances'][instance_to_check.country]['ping'] = f"{ping_ms} ms"
                 dashboard_state['instances'][instance_to_check.country]['speed'] = f"{speed_kbs:.1f} KB/s"
                 
-                logger.info(f"[{instance_to_check.country}] Proxy healthy. IP: {current_ip}, Ping: {ttfb:.2f}s, Speed: {speed_kbs:.1f} KB/s")
+                logger.info(f"[{instance_to_check.country}] Proxy healthy. IP: {current_ip}, Ping: {ping_ms} ms, Speed: {speed_kbs:.1f} KB/s")
                 
-                if ttfb > LATENCY_THRESHOLD:
-                    instance_to_check.request_new_ip(f"High Ping ({ttfb:.2f}s)")
+                if ping_ms > (LATENCY_THRESHOLD * 1000):
+                    instance_to_check.request_new_ip(f"High Ping ({ping_ms}ms)")
                     instance_to_check.next_check_time = time.time() + 10
                 elif speed_kbs < SPEED_THRESHOLD_KBS:
                     instance_to_check.request_new_ip(f"Low Speed ({speed_kbs:.1f} KB/s)")
