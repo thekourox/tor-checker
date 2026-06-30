@@ -23,7 +23,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=$DIR
-ExecStart=/usr/bin/env python3 api.py
+ExecStart=/bin/bash setup_and_run.sh
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1

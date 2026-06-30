@@ -80,4 +80,4 @@ echo ""
 echo "Step 3: Launching Web Panel (FastAPI)..."
 echo "The panel will be available at http://<YOUR_SERVER_IP>:54321"
 ulimit -n 65535 > /dev/null 2>&1
-python3 api.py
+exec python3 api.py
