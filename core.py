@@ -222,7 +222,7 @@ class TorInstance:
             config['AvoidDiskWrites'] = '1'
             
             # Anti-Spike and Stability parameters for v2ray/PasarGuard
-            config['MaxCircuitDirtiness'] = '300'    # Rotate circuits every 5m before they degrade
+            config['MaxCircuitDirtiness'] = '86400'  # 24 hours (prevents sudden ping jumps)
             config['CircuitBuildTimeout'] = '15'     # Relaxed to 15s to prevent circuit thrashing OOM
             config['LearnCircuitBuildTimeout'] = '0' # Disable dynamic learning
             config['EnforceDistinctSubnets'] = '0'   # Relax subnet rules for faster build
@@ -231,9 +231,8 @@ class TorInstance:
             config['ConnectionPadding'] = '0'
             config['ReducedConnectionPadding'] = '1'
             
-            # Geography constraints (European nodes for entry, blacklist bad nodes)
-            config['EntryNodes'] = '{nl},{de},{fr},{gb}'
-            config['ExcludeNodes'] = '{ru},{cn},{ir},{kp},{sy},{iq}'
+            # Geography constraints removed because the Linux server is missing the GeoIP database.
+            # Using 24-hour circuit lock instead to guarantee no ping spikes after connection.
             
             if self.available_fingerprints:
                 if getattr(self, 'fingerprint_index', 0) >= len(self.available_fingerprints):
