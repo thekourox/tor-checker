@@ -78,6 +78,6 @@ sleep 3
 echo ""
 
 echo "Step 3: Launching Web Panel (FastAPI)..."
-echo "The panel will be available at http://127.0.0.1:54321 (accessible via SSH tunnel)"
+echo "The panel will be available at http://<YOUR_SERVER_IP>:54321"
 ulimit -n 65535 > /dev/null 2>&1
 python3 api.py
