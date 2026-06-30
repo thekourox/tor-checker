@@ -309,6 +309,11 @@ def measure_ping(instance):
                     if line.startswith('loc='):
                         actual_country = line.split('=')[1].upper()
                         break
+                        
+            if not actual_country or actual_country in ['T1', 'XX', 'A1']:
+                ip_resp = requests.get('https://ipinfo.io/country', proxies=proxies, timeout=10)
+                if ip_resp.status_code == 200:
+                    actual_country = ip_resp.text.strip().upper()
         except:
             pass
             
