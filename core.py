@@ -198,6 +198,13 @@ class TorInstance:
             config['NumCPUs'] = '1'
             config['AvoidDiskWrites'] = '1'
             
+            # Anti-Spike and Stability parameters for v2ray/PasarGuard
+            config['MaxCircuitDirtiness'] = '86400'  # 24 hours (prevents sudden ping jumps)
+            config['CircuitStreamTimeout'] = '300'   # 5 minutes
+            config['KeepalivePeriod'] = '60'
+            config['ConnectionPadding'] = '0'
+            config['ReducedConnectionPadding'] = '1'
+            
             if self.available_fingerprints:
                 if getattr(self, 'fingerprint_index', 0) >= len(self.available_fingerprints):
                     self.fingerprint_index = 0
