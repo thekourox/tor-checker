@@ -89,6 +89,7 @@ def spawn_country(country_code):
         instances.append(instance)
         
     threading.Thread(target=instance.start, daemon=True).start()
+    time.sleep(1) # Staggered Bootstrapping delay
 
 def detect_hardware_tier():
     try:
@@ -181,7 +182,10 @@ class TorInstance:
             'GeoIPFile': os.path.join(os.getcwd(), 'data', 'geoip').replace('\\', '/'),
             'GeoIPv6File': os.path.join(os.getcwd(), 'data', 'geoip6').replace('\\', '/'),
             'ClientUseIPv6': '0',
-            'ClientPreferIPv6ORPort': '0'
+            'ClientPreferIPv6ORPort': '0',
+            'EnforceDistinctSubnets': '0',
+            'ConnectionPadding': '0',
+            'ReducedConnectionPadding': '1'
         }
         config['UseEntryGuards'] = '0'
         
@@ -330,15 +334,30 @@ def scheduler_worker(worker_id):
         
         with QUEUE_LOCK:
             for inst in instances:
-                if not inst.currently_checking and inst.active and now >= inst.next_check_time:
-                    instance_to_check = inst
-                    inst.currently_checking = True
-                    break
-                    
+                # Pick up active instances, OR sleeping instances that are ready to wake up
+                if not inst.currently_checking and now >= inst.next_check_time:
+                    if inst.active or (not inst.active and inst.consecutive_failures >= 3):
+                        instance_to_check = inst
+                        inst.currently_checking = True
+                        break
+                    elif not inst.active and inst.consecutive_failures == 0:
+                        # Failed to even start initially? Let's just retry it.
+                        instance_to_check = inst
+                        inst.currently_checking = True
+                        break
+                        
         if not instance_to_check:
             time.sleep(1)
             continue
             
+        if not instance_to_check.active:
+            # Waking up from sleep!
+            logger.info(f"[{instance_to_check.country}] Waking up from sleep mode...")
+            instance_to_check.consecutive_failures = 0
+            instance_to_check.fingerprint_index = 0
+            instance_to_check.start()
+            instance_to_check.currently_checking = False
+            continue
         try:
             success, ping_ms, actual_country = measure_ping(instance_to_check)
             
@@ -351,9 +370,18 @@ def scheduler_worker(worker_id):
                     
                     if actual_country and actual_country.lower() != instance_to_check.country.lower():
                         logger.warning(f"[{instance_to_check.country}] Mismatched Country! Expected {instance_to_check.country}, got {actual_country}.")
-                        dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Wrong Country ({actual_country})"
-                        threading.Thread(target=instance_to_check.request_new_ip, args=(f"Wrong Country ({actual_country})",), daemon=True).start()
-                        instance_to_check.next_check_time = time.time() + 10
+                        
+                        instance_to_check.consecutive_failures += 1
+                        if instance_to_check.consecutive_failures >= 3:
+                            dashboard_state['instances'][instance_to_check.country]['status'] = f"💤 Sleeping (5m) [Bad Country: {actual_country}]"
+                            instance_to_check.stop()
+                            instance_to_check.next_check_time = time.time() + 300
+                        else:
+                            dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Wrong Country ({actual_country})"
+                            threading.Thread(target=instance_to_check.request_new_ip, args=(f"Wrong Country ({actual_country})",), daemon=True).start()
+                            instance_to_check.next_check_time = time.time() + 10
+                            
+                        instance_to_check.currently_checking = False
                         continue
                         
                     dashboard_state['instances'][instance_to_check.country]['ping'] = f"{ping_ms} ms"
@@ -368,15 +396,15 @@ def scheduler_worker(worker_id):
                     instance_to_check.consecutive_failures += 1
                     dashboard_state['instances'][instance_to_check.country]['ping'] = "Timeout"
                     
-                    if instance_to_check.consecutive_failures >= 5:
-                        dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Fatal Error. Rebooting Node..."
+                    if instance_to_check.consecutive_failures >= 3:
+                        dashboard_state['instances'][instance_to_check.country]['status'] = f"💤 Sleeping (5m) [Network Timeout]"
                         instance_to_check.stop()
-                        instance_to_check.consecutive_failures = 0
-                        instance_to_check.fingerprint_index = 0
-                        threading.Thread(target=instance_to_check.start, daemon=True).start()
+                        instance_to_check.next_check_time = time.time() + 300
                     else:
-                        dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Failed ({instance_to_check.consecutive_failures}/5). Auto-Healing..."
-                        threading.Thread(target=instance_to_check.request_new_ip, args=(f"Ping Failed",), daemon=True).start()
+                        dashboard_state['instances'][instance_to_check.country]['status'] = f"🟡 Timeout. Retrying..."
+                        threading.Thread(target=instance_to_check.request_new_ip, args=(f"Ping Timeout",), daemon=True).start()
+                        instance_to_check.next_check_time = time.time() + 10
+
                     instance_to_check.next_check_time = time.time() + 10
         except Exception as e:
             logger.error(f"Worker {worker_id} error: {e}")
