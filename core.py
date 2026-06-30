@@ -142,9 +142,13 @@ class TorInstance:
         self.next_check_time = time.time() + 15  # Give it 15s to bootstrap initially
         self.currently_checking = False
         self.consecutive_failures = 0
+        self.ping_history = []
         
         # Concurrency and Zombie protection
         self.start_lock = threading.Lock()
+        
+        # Start Circuit Warmup Thread
+        threading.Thread(target=self._circuit_warmup_worker, daemon=True).start()
 
         
         # Init dashboard state
@@ -155,6 +159,22 @@ class TorInstance:
             'status': '🟡 Bootstrapping...'
         }
         
+    def _circuit_warmup_worker(self):
+        while True:
+            time.sleep(10)
+            if not self.active or not self.process:
+                continue
+            try:
+                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
+                    controller.authenticate()
+                    # Count BUILT circuits
+                    built_circuits = [c for c in controller.get_circuits() if c.status == 'BUILT']
+                    if len(built_circuits) < 3:
+                        logger.info(f"[{self.country}] Circuit pool low ({len(built_circuits)}). Pre-building new circuit...")
+                        controller.new_circuit()
+            except Exception:
+                pass
+
     def start(self):
         if not self.start_lock.acquire(blocking=False):
             logger.warning(f"[{self.country}] Start already in progress. Ignoring duplicate start request.")
@@ -199,11 +219,18 @@ class TorInstance:
             config['AvoidDiskWrites'] = '1'
             
             # Anti-Spike and Stability parameters for v2ray/PasarGuard
-            config['MaxCircuitDirtiness'] = '86400'  # 24 hours (prevents sudden ping jumps)
+            config['MaxCircuitDirtiness'] = '300'    # Rotate circuits every 5m before they degrade
+            config['CircuitBuildTimeout'] = '5'      # Strict 5s build timeout for fast circuits only
+            config['LearnCircuitBuildTimeout'] = '0' # Disable dynamic learning
+            config['EnforceDistinctSubnets'] = '0'   # Relax subnet rules for faster build
             config['CircuitStreamTimeout'] = '300'   # 5 minutes
             config['KeepalivePeriod'] = '60'
             config['ConnectionPadding'] = '0'
             config['ReducedConnectionPadding'] = '1'
+            
+            # Geography constraints (European nodes for entry, blacklist bad nodes)
+            config['EntryNodes'] = '{nl},{de},{fr},{gb}'
+            config['ExcludeNodes'] = '{ru},{cn},{ir},{kp},{sy},{iq}'
             
             if self.available_fingerprints:
                 if getattr(self, 'fingerprint_index', 0) >= len(self.available_fingerprints):
@@ -315,9 +342,19 @@ class TorInstance:
                 threading.Thread(target=self.start, daemon=True).start()
         else:
             self.fingerprint_index = 0
-            self.stop()
-            time.sleep(1)
-            threading.Thread(target=self.start, daemon=True).start()
+            dashboard_state['instances'][self.country]['status'] = f"🟡 Optimizing (Fallback)..."
+            logger.info(f"[{self.country}] Auto-healing using fallback country ExitNodes")
+            try:
+                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
+                    controller.authenticate()
+                    controller.set_conf('ExitNodes', f'{{{self.country}}}')
+                    controller.signal(Signal.NEWNYM)
+                time.sleep(3)
+            except Exception as e:
+                logger.error(f"[{self.country}] Failed to SETCONF: {e}")
+                self.stop()
+                time.sleep(1)
+                threading.Thread(target=self.start, daemon=True).start()
             
     def stop(self):
         self.active = False
@@ -446,26 +483,39 @@ def scheduler_worker(worker_id):
                             instance_to_check.currently_checking = False
                             continue
                         
-                    dashboard_state['instances'][instance_to_check.country]['ping'] = f"{ping_ms} ms"
+                    instance_to_check.ping_history.append(ping_ms)
+                    if len(instance_to_check.ping_history) > 3:
+                        instance_to_check.ping_history.pop(0)
+                        
+                    ema_ping = sum(instance_to_check.ping_history) / len(instance_to_check.ping_history)
+                        
+                    dashboard_state['instances'][instance_to_check.country]['ping'] = f"{int(ema_ping)} ms"
                     dashboard_state['instances'][instance_to_check.country]['status'] = "🟢 Online"
                     
-                    if ping_ms > (LATENCY_THRESHOLD * 1000):
-                        instance_to_check.request_new_ip(f"High Ping ({ping_ms}ms)")
-                        instance_to_check.next_check_time = time.time() + 10
+                    if ema_ping > (LATENCY_THRESHOLD * 1000):
+                        instance_to_check.request_new_ip(f"High Ping Trend ({int(ema_ping)}ms)")
+                        instance_to_check.next_check_time = time.time() + 5
                     else:
                         instance_to_check.next_check_time = time.time() + CONFIG_PING_INTERVAL
                 else:
                     instance_to_check.consecutive_failures += 1
+                    instance_to_check.ping_history.append(10000)
+                    if len(instance_to_check.ping_history) > 3:
+                        instance_to_check.ping_history.pop(0)
+                        
+                    ema_ping = sum(instance_to_check.ping_history) / len(instance_to_check.ping_history)
                     dashboard_state['instances'][instance_to_check.country]['ping'] = "Timeout"
                     
                     if instance_to_check.consecutive_failures >= 3:
                         dashboard_state['instances'][instance_to_check.country]['status'] = f"💤 Sleeping (5m) [Network Timeout]"
                         instance_to_check.stop()
                         instance_to_check.consecutive_failures = 0
+                        instance_to_check.ping_history.clear()
                         instance_to_check.next_check_time = time.time() + 300
                     else:
                         dashboard_state['instances'][instance_to_check.country]['status'] = f"🟡 Timeout. Retrying..."
-                        instance_to_check.request_new_ip(f"Ping Timeout")
+                        if ema_ping > (LATENCY_THRESHOLD * 1000):
+                            instance_to_check.request_new_ip(f"Ping Timeout Trend")
                         instance_to_check.next_check_time = time.time() + 10
 
                     instance_to_check.next_check_time = time.time() + 10
