@@ -24,7 +24,7 @@ socket.setdefaulttimeout(20)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler("manager_logs.txt", mode='w', encoding='utf-8')]
+    handlers=[logging.FileHandler("manager_logs.txt", mode='a', encoding='utf-8')]
 )
 logger = logging.getLogger("TorManager")
 
@@ -199,10 +199,12 @@ class TorInstance:
             config['AvoidDiskWrites'] = '1'
             
             if self.available_fingerprints:
-                best_fingerprint = self.available_fingerprints[0]
-                self.fingerprint_index = 1
+                if getattr(self, 'fingerprint_index', 0) >= len(self.available_fingerprints):
+                    self.fingerprint_index = 0
+                idx = getattr(self, 'fingerprint_index', 0)
+                best_fingerprint = self.available_fingerprints[idx]
                 config['ExitNodes'] = f'${best_fingerprint}'
-                logger.info(f"[{self.country}] Using optimal starting fingerprint: {best_fingerprint}")
+                logger.info(f"[{self.country}] Using starting fingerprint [{idx}/{len(self.available_fingerprints)}]: {best_fingerprint}")
             else:
                 config['ExitNodes'] = f'{{{self.country}}}'
 
@@ -400,11 +402,11 @@ def scheduler_worker(worker_id):
             continue
             
         if not instance_to_check.active:
-            # Waking up from sleep!
-            logger.info(f"[{instance_to_check.country}] Waking up from sleep mode...")
+            # Waking up from sleep or retrying a dead start
+            logger.info(f"[{instance_to_check.country}] Attempting to start/wake up...")
             instance_to_check.consecutive_failures = 0
-            instance_to_check.fingerprint_index = 0
-            instance_to_check.start()
+            instance_to_check.next_check_time = time.time() + 30  # Give it 30s to bootstrap
+            threading.Thread(target=instance_to_check.start, daemon=True).start()
             instance_to_check.currently_checking = False
             continue
         try:
@@ -418,21 +420,24 @@ def scheduler_worker(worker_id):
                     dashboard_state['instances'][instance_to_check.country]['ip_location'] = actual_country_str
                     
                     if actual_country and actual_country.lower() != instance_to_check.country.lower():
-                        logger.warning(f"[{instance_to_check.country}] Mismatched Country! Expected {instance_to_check.country}, got {actual_country}.")
-                        
-                        instance_to_check.consecutive_failures += 1
-                        if instance_to_check.consecutive_failures >= 3:
-                            dashboard_state['instances'][instance_to_check.country]['status'] = f"💤 Sleeping (5m) [Bad Country: {actual_country}]"
-                            instance_to_check.stop()
-                            instance_to_check.consecutive_failures = 0
-                            instance_to_check.next_check_time = time.time() + 300
+                        if actual_country in ['T1', 'XX', 'A1', 'T1', 'xx', 'a1']:
+                            logger.info(f"[{instance_to_check.country}] IP location hidden by Tor network ({actual_country}), bypassing strict country check.")
                         else:
-                            dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Wrong Country ({actual_country})"
-                            instance_to_check.request_new_ip(f"Wrong Country ({actual_country})")
-                            instance_to_check.next_check_time = time.time() + 10
+                            logger.warning(f"[{instance_to_check.country}] Mismatched Country! Expected {instance_to_check.country}, got {actual_country}.")
                             
-                        instance_to_check.currently_checking = False
-                        continue
+                            instance_to_check.consecutive_failures += 1
+                            if instance_to_check.consecutive_failures >= 3:
+                                dashboard_state['instances'][instance_to_check.country]['status'] = f"💤 Sleeping (5m) [Bad Country: {actual_country}]"
+                                instance_to_check.stop()
+                                instance_to_check.consecutive_failures = 0
+                                instance_to_check.next_check_time = time.time() + 300
+                            else:
+                                dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Wrong Country ({actual_country})"
+                                instance_to_check.request_new_ip(f"Wrong Country ({actual_country})")
+                                instance_to_check.next_check_time = time.time() + 10
+                                
+                            instance_to_check.currently_checking = False
+                            continue
                         
                     dashboard_state['instances'][instance_to_check.country]['ping'] = f"{ping_ms} ms"
                     dashboard_state['instances'][instance_to_check.country]['status'] = "🟢 Online"
