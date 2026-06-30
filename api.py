@@ -34,12 +34,42 @@ async def get_status():
 
 CONFIG_FILE = "config.json"
 
+def get_auto_config():
+    tier = core.HARDWARE_TIER
+    if tier == 'LOW':
+        return {
+            'max_instances': 15,
+            'ping_interval': 60,
+            'ram_limit_mb': 15,
+            'bandwidth_limit_kb': 200,
+            'worker_count': 2,
+            'selected_countries': ""
+        }
+    elif tier == 'MID':
+        return {
+            'max_instances': 40,
+            'ping_interval': 30,
+            'ram_limit_mb': 30,
+            'bandwidth_limit_kb': 0,
+            'worker_count': 0,
+            'selected_countries': ""
+        }
+    else:
+        return {
+            'max_instances': 100,
+            'ping_interval': 15,
+            'ram_limit_mb': 50,
+            'bandwidth_limit_kb': 0,
+            'worker_count': 16,
+            'selected_countries': ""
+        }
+
 class StartConfig(BaseModel):
-    max_instances: int = 20
-    ping_interval: int = 60
-    ram_limit_mb: int = 15
-    bandwidth_limit_kb: int = 0
-    worker_count: int = 0
+    max_instances: int = None
+    ping_interval: int = None
+    ram_limit_mb: int = None
+    bandwidth_limit_kb: int = None
+    worker_count: int = None
     selected_countries: str = ""
 
 @app.on_event("startup")
@@ -53,21 +83,32 @@ async def startup_event():
     except:
         pass
 
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                data = json.load(f)
-                config = StartConfig(**data)
-                core.start_network(
-                    max_instances=config.max_instances,
-                    ping_interval=config.ping_interval,
-                    ram_limit_mb=config.ram_limit_mb,
-                    bandwidth_limit_kb=config.bandwidth_limit_kb,
-                    worker_count=config.worker_count,
-                    selected_countries=config.selected_countries
-                )
-        except:
-            pass
+    if not os.path.exists(CONFIG_FILE):
+        auto_cfg = get_auto_config()
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(auto_cfg, f)
+            
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            data = json.load(f)
+            
+            # Merge missing keys from auto_config for backward compatibility
+            auto_cfg = get_auto_config()
+            for k, v in auto_cfg.items():
+                if k not in data or data[k] is None:
+                    data[k] = v
+                    
+            config = StartConfig(**data)
+            core.start_network(
+                max_instances=config.max_instances,
+                ping_interval=config.ping_interval,
+                ram_limit_mb=config.ram_limit_mb,
+                bandwidth_limit_kb=config.bandwidth_limit_kb,
+                worker_count=config.worker_count,
+                selected_countries=config.selected_countries
+            )
+    except:
+        pass
 
 @app.get("/api/settings")
 async def get_settings():
@@ -77,7 +118,7 @@ async def get_settings():
                 return json.load(f)
         except:
             pass
-    return StartConfig().dict()
+    return get_auto_config()
 
 @app.get("/api/scan_countries")
 async def scan_countries():
