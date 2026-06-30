@@ -323,7 +323,24 @@ class TorInstance:
             threading.Thread(target=self.start, daemon=True).start()
             return
 
-        if self.fingerprint_index < len(self.available_fingerprints):
+        if not self.available_fingerprints:
+            dashboard_state['instances'][self.country]['status'] = f"🟡 Optimizing (Fallback)..."
+            logger.info(f"[{self.country}] Auto-healing using fallback country ExitNodes")
+            try:
+                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
+                    controller.authenticate()
+                    controller.set_conf('ExitNodes', f'{{{self.country}}}')
+                    controller.signal(Signal.NEWNYM)
+                time.sleep(3)
+            except Exception as e:
+                logger.error(f"[{self.country}] Failed to SETCONF: {e}")
+                self.stop()
+                time.sleep(1)
+                threading.Thread(target=self.start, daemon=True).start()
+        else:
+            if self.fingerprint_index >= len(self.available_fingerprints):
+                self.fingerprint_index = 0
+                
             best_fingerprint = self.available_fingerprints[self.fingerprint_index]
             self.fingerprint_index += 1
             dashboard_state['instances'][self.country]['status'] = f"🟡 Optimizing ({best_fingerprint[:8]})..."
@@ -332,24 +349,6 @@ class TorInstance:
                 with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
                     controller.authenticate()
                     controller.set_conf('ExitNodes', f'${best_fingerprint}')
-                    controller.signal(Signal.NEWNYM)
-                time.sleep(3)
-            except Exception as e:
-                logger.error(f"[{self.country}] Failed to SETCONF: {e}")
-                err_msg = str(e).split('\n')[0][:30]
-                dashboard_state['instances'][self.country]['status'] = f"🔴 Opt Fail: {err_msg}"
-                # If controller fails, force a hard restart
-                self.stop()
-                time.sleep(1)
-                threading.Thread(target=self.start, daemon=True).start()
-        else:
-            self.fingerprint_index = 0
-            dashboard_state['instances'][self.country]['status'] = f"🟡 Optimizing (Fallback)..."
-            logger.info(f"[{self.country}] Auto-healing using fallback country ExitNodes")
-            try:
-                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
-                    controller.authenticate()
-                    controller.set_conf('ExitNodes', f'{{{self.country}}}')
                     controller.signal(Signal.NEWNYM)
                 time.sleep(3)
             except Exception as e:
@@ -596,36 +595,64 @@ def discover_exit_countries(tor_cmd):
     country_fingerprints = {}
     country_counts = {}
     
-    dashboard_state['discovery_msg'] = "Node Bootstrapped. Parsing Global Network Consensus..."
+    dashboard_state['discovery_msg'] = "Fetching Global Network Consensus from Onionoo API..."
     
     try:
-        with Controller.from_port(address='127.0.0.1', port=9049) as controller:
-            controller.authenticate()
-            statuses = controller.get_network_statuses()
-            for desc in statuses:
-                if 'Exit' in desc.flags and 'Valid' in desc.flags:
-                    try:
-                        country_code = controller.get_info(f"ip-to-country/{desc.address}")
-                        if country_code and country_code != '??':
-                            country_code = country_code.lower()
-                            
-                            bw = desc.bandwidth if desc.bandwidth else 0
-                            if country_code not in country_fingerprints:
-                                country_fingerprints[country_code] = []
-                            country_fingerprints[country_code].append((desc.fingerprint, bw))
-                            country_counts[country_code] = country_counts.get(country_code, 0) + 1
-                    except Exception:
-                        pass
-                        
+        import urllib.request
+        import json
+        logger.info("Fetching global network consensus from Onionoo API...")
+        url = "https://onionoo.torproject.org/details?type=relay&flag=Exit&running=true"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=30) as response:
+            data = json.loads(response.read().decode())
+            for relay in data.get('relays', []):
+                country_code = relay.get('country')
+                if country_code:
+                    country_code = country_code.lower()
+                    bw = relay.get('observed_bandwidth', 0)
+                    if country_code not in country_fingerprints:
+                        country_fingerprints[country_code] = []
+                    country_fingerprints[country_code].append((relay.get('fingerprint'), bw))
+                    country_counts[country_code] = country_counts.get(country_code, 0) + 1
+            
             for c in country_fingerprints:
                 country_fingerprints[c].sort(key=lambda x: x[1], reverse=True)
                 country_fingerprints[c] = [x[0] for x in country_fingerprints[c]]
                 
-    except Exception as e:
-        logger.error(f"Discovery failed: {e}")
+    except Exception as api_e:
+        logger.warning(f"Onionoo API failed: {api_e}. Falling back to local Tor consensus...")
+        dashboard_state['discovery_msg'] = "Onionoo failed. Bootstrapping local Tor for consensus..."
+        
+        try:
+            with Controller.from_port(address='127.0.0.1', port=9049) as controller:
+                controller.authenticate()
+                statuses = controller.get_network_statuses()
+                for desc in statuses:
+                    if 'Exit' in desc.flags and 'Valid' in desc.flags:
+                        try:
+                            country_code = controller.get_info(f"ip-to-country/{desc.address}")
+                            if country_code and country_code != '??':
+                                country_code = country_code.lower()
+                                bw = desc.bandwidth if desc.bandwidth else 0
+                                if country_code not in country_fingerprints:
+                                    country_fingerprints[country_code] = []
+                                country_fingerprints[country_code].append((desc.fingerprint, bw))
+                                country_counts[country_code] = country_counts.get(country_code, 0) + 1
+                        except Exception:
+                            pass
+                            
+                for c in country_fingerprints:
+                    country_fingerprints[c].sort(key=lambda x: x[1], reverse=True)
+                    country_fingerprints[c] = [x[0] for x in country_fingerprints[c]]
+        except Exception as e:
+            logger.error(f"Local Discovery failed: {e}")
+            
     finally:
-        discovery_process.kill()
-        discovery_process.wait()
+        try:
+            discovery_process.kill()
+            discovery_process.wait()
+        except:
+            pass
         
     return country_counts, country_fingerprints
 
