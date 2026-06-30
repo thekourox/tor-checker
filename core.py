@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TorManager")
 
-TEST_URL = "https://cloudflare.com/cdn-cgi/trace"
+TEST_URL = "https://1.1.1.1/cdn-cgi/trace"
 SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=100000" # 100KB payload
 TIMEOUT = 15
 LATENCY_THRESHOLD = 8.0
@@ -185,7 +185,9 @@ class TorInstance:
             'ClientPreferIPv6ORPort': '0',
             'EnforceDistinctSubnets': '0',
             'ConnectionPadding': '0',
-            'ReducedConnectionPadding': '1'
+            'ReducedConnectionPadding': '1',
+            'EntryNodes': '{nl},{de},{fr},{gb},{us},{ca}',
+            'ConfluxEnabled': '1'
         }
         config['UseEntryGuards'] = '0'
         
@@ -295,7 +297,7 @@ def measure_ping(instance):
         s.settimeout(10.0)
         
         ping_start = time.time()
-        s.connect(("www.google.com", 80))
+        s.connect(("1.1.1.1", 80))
         ping_end = time.time()
         s.close()
         
@@ -310,7 +312,7 @@ def measure_ping(instance):
                 'http': f'socks5h://127.0.0.1:{instance.socks_port}',
                 'https': f'socks5h://127.0.0.1:{instance.socks_port}'
             }
-            resp = requests.get('https://cloudflare.com/cdn-cgi/trace', proxies=proxies, timeout=10)
+            resp = requests.get('https://1.1.1.1/cdn-cgi/trace', proxies=proxies, timeout=10)
             if resp.status_code == 200:
                 for line in resp.text.splitlines():
                     if line.startswith('loc='):
@@ -564,7 +566,6 @@ def start_network_thread(max_instances, ping_interval, ram_limit_mb, bandwidth_l
     
     active_countries = []
     
-    # First add preferred countries
     if selected_countries:
         preferred = [c.strip().lower() for c in selected_countries.split(",") if c.strip()]
         for p in preferred:
@@ -572,6 +573,14 @@ def start_network_thread(max_instances, ping_interval, ram_limit_mb, bandwidth_l
                 active_countries.append(p)
                 if len(active_countries) >= max_instances:
                     break
+            elif p not in all_available_countries:
+                # Add to dashboard as unsupported
+                dashboard_state['instances'][p.lower()] = {
+                    'socks_port': 'N/A',
+                    'ip_location': 'N/A',
+                    'ping': '...',
+                    'status': '🔴 Unsupported (No Tor Relays)'
+                }
                     
     # Then fill the rest
     for c in all_available_countries:
