@@ -189,7 +189,6 @@ class TorInstance:
             'EntryNodes': '{nl},{de},{fr},{gb},{us},{ca}',
             'ConfluxEnabled': '1'
         }
-        config['UseEntryGuards'] = '0'
         
         config['MaxMemInQueues'] = f'{CONFIG_RAM_LIMIT_MB} MB'
         if CONFIG_BW_LIMIT_KB > 0:
