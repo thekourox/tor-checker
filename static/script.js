@@ -56,7 +56,7 @@ function updateTable(instances) {
         tr.innerHTML = `
             <td class="country-code" title="${country.toUpperCase()}">${getCountryName(country)}</td>
             <td>${data.port}</td>
-            <td class="ip-location">${getFlagEmoji(country)} ${getCountryName(country)}</td>
+            <td class="ip-location">${getFlagEmoji(data.ip_location)} ${getCountryName(data.ip_location)}</td>
             <td>${data.ping}</td>
             <td><span class="status-dot ${statusDot}"></span> ${statusText}</td>
         `;

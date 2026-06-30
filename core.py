@@ -143,6 +143,7 @@ class TorInstance:
         # Init dashboard state
         dashboard_state['instances'][self.country] = {
             'port': str(self.socks_port),
+            'ip_location': '...',
             'ping': '...',
             'status': '🟡 Bootstrapping...'
         }
@@ -279,11 +280,12 @@ class TorInstance:
 def measure_ping(instance):
     ping_ms = 0
     success = False
+    actual_country = None
     
     try:
         s = socks.socksocket()
         s.set_proxy(socks.SOCKS5, "127.0.0.1", instance.socks_port)
-        s.settimeout(15.0)
+        s.settimeout(10.0)
         
         ping_start = time.time()
         s.connect(("www.google.com", 80))
@@ -295,7 +297,22 @@ def measure_ping(instance):
     except Exception as e:
         success = False
         
-    return success, ping_ms
+    if success:
+        try:
+            proxies = {
+                'http': f'socks5h://127.0.0.1:{instance.socks_port}',
+                'https': f'socks5h://127.0.0.1:{instance.socks_port}'
+            }
+            resp = requests.get('https://cloudflare.com/cdn-cgi/trace', proxies=proxies, timeout=10)
+            if resp.status_code == 200:
+                for line in resp.text.splitlines():
+                    if line.startswith('loc='):
+                        actual_country = line.split('=')[1].upper()
+                        break
+        except:
+            pass
+            
+    return success, ping_ms, actual_country
 
 def scheduler_worker(worker_id):
     logger.info(f"Worker {worker_id} started.")
@@ -315,11 +332,22 @@ def scheduler_worker(worker_id):
             continue
             
         try:
-            success, ping_ms = measure_ping(instance_to_check)
+            success, ping_ms, actual_country = measure_ping(instance_to_check)
             
             with QUEUE_LOCK:
                 if success:
                     instance_to_check.consecutive_failures = 0
+                    
+                    actual_country_str = actual_country if actual_country else instance_to_check.country.upper()
+                    dashboard_state['instances'][instance_to_check.country]['ip_location'] = actual_country_str
+                    
+                    if actual_country and actual_country.lower() != instance_to_check.country.lower():
+                        logger.warning(f"[{instance_to_check.country}] Mismatched Country! Expected {instance_to_check.country}, got {actual_country}.")
+                        dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Wrong Country ({actual_country})"
+                        threading.Thread(target=instance_to_check.request_new_ip, args=(f"Wrong Country ({actual_country})",), daemon=True).start()
+                        instance_to_check.next_check_time = time.time() + 10
+                        continue
+                        
                     dashboard_state['instances'][instance_to_check.country]['ping'] = f"{ping_ms} ms"
                     dashboard_state['instances'][instance_to_check.country]['status'] = "🟢 Online"
                     
