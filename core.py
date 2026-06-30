@@ -210,15 +210,45 @@ class TorInstance:
                 match = re.search(r'Bootstrapped (\d+)%', line)
                 if match:
                     dashboard_state['instances'][self.country]['status'] = f"🟡 Bootstrapping {match.group(1)}%"
-                logger.info(f"[{self.country}] {line}")
+                logger.info(f"[{self.country}] {line.strip()}")
 
-            self.process = stem.process.launch_tor_with_config(
-                config=config,
-                tor_cmd=self.tor_cmd,
-                take_ownership=False,
-                init_msg_handler=handle_init_msg,
-                timeout=45
+            torrc_path = os.path.join(self.data_dir, "torrc")
+            with open(torrc_path, "w") as f:
+                for k, v in config.items():
+                    f.write(f"{k} {v}\n")
+                    
+            self.process = subprocess.Popen(
+                [self.tor_cmd, "-f", torrc_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
             )
+            
+            start_time = time.time()
+            bootstrapped = False
+            
+            # Read stdout line by line to monitor bootstrap
+            def monitor_bootstrap():
+                nonlocal bootstrapped
+                try:
+                    for line in self.process.stdout:
+                        handle_init_msg(line)
+                        if "Bootstrapped 100%" in line:
+                            bootstrapped = True
+                            break
+                        if time.time() - start_time > 45:
+                            break
+                except Exception:
+                    pass
+                    
+            monitor_thread = threading.Thread(target=monitor_bootstrap, daemon=True)
+            monitor_thread.start()
+            monitor_thread.join(timeout=45)
+            
+            if not bootstrapped:
+                raise Exception("Bootstrap timeout (45s) or process crashed")
+                
             self.active = True
             dashboard_state['instances'][self.country]['status'] = "🟢 Online. Testing..."
             logger.info(f"[{self.country}] Tor instance successfully started and bootstrapped.")
@@ -236,6 +266,10 @@ class TorInstance:
             logger.error(f"[{self.country}] Failed to start Tor: {e}")
             err_msg = str(e).split('\n')[0][:30]
             dashboard_state['instances'][self.country]['status'] = f"🔴 {err_msg}"
+            if self.process:
+                try:
+                    self.process.kill()
+                except: pass
             self.active = False
             self.process = None
         finally:
