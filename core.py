@@ -12,9 +12,12 @@ import platform
 import json
 import re
 import psutil
+import psutil
 import random
 import socket
 import socks
+import atexit
+
 socket.setdefaulttimeout(20)
 
 # Setup File Logging ONLY (No console spam)

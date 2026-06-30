@@ -110,6 +110,14 @@ async def startup_event():
     except:
         pass
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Final cleanup to ensure no Tor zombies are left behind
+    try:
+        core.cleanup_all_instances()
+    except:
+        pass
+
 @app.get("/api/settings")
 async def get_settings():
     if os.path.exists(CONFIG_FILE):
