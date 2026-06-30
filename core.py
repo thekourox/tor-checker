@@ -215,7 +215,7 @@ class TorInstance:
             self.process = stem.process.launch_tor_with_config(
                 config=config,
                 tor_cmd=self.tor_cmd,
-                take_ownership=True,
+                take_ownership=False,
                 init_msg_handler=handle_init_msg,
                 timeout=None
             )
@@ -481,7 +481,7 @@ def discover_exit_countries(tor_cmd):
         discovery_process = stem.process.launch_tor_with_config(
             config=config,
             tor_cmd=tor_cmd,
-            take_ownership=True,
+            take_ownership=False,
             init_msg_handler=handle_init_msg,
             timeout=None
         )
