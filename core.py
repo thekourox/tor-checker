@@ -115,7 +115,7 @@ dashboard_state = {
 }
 
 # Admin Configs
-CONFIG_PING_INTERVAL = 60
+CONFIG_PING_INTERVAL = 30
 CONFIG_RAM_LIMIT_MB = 15
 CONFIG_BW_LIMIT_KB = 0
 

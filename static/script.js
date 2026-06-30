@@ -231,7 +231,7 @@ async function loadSettings() {
         if (res.ok) {
             const data = await res.json();
             document.getElementById('max-countries').value = data.max_instances || 20;
-            document.getElementById('set-ping').value = data.ping_interval || 60;
+            document.getElementById('set-ping').value = data.ping_interval || 30;
             document.getElementById('set-ram').value = data.ram_limit_mb || 15;
             document.getElementById('set-bw').value = data.bandwidth_limit_kb || 0;
             document.getElementById('set-workers').value = data.worker_count || 0;
