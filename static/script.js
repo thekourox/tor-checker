@@ -101,12 +101,25 @@ async function fetchStatus() {
 btnStart.addEventListener('click', async () => {
     try {
         const maxCountries = document.getElementById('max-countries').value || 20;
+        const setPing = document.getElementById('set-ping').value || 60;
+        const setRam = document.getElementById('set-ram').value || 15;
+        const setBw = document.getElementById('set-bw').value || 0;
+        const setWorkers = document.getElementById('set-workers').value || 0;
+
+        const payload = {
+            max_instances: parseInt(maxCountries),
+            ping_interval: parseInt(setPing),
+            ram_limit_mb: parseInt(setRam),
+            bandwidth_limit_kb: parseInt(setBw),
+            worker_count: parseInt(setWorkers)
+        };
+
         const res = await fetch('/api/start', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ max_instances: parseInt(maxCountries) })
+            body: JSON.stringify(payload)
         });
         const data = await res.json();
         showToast(data.message);
@@ -127,18 +140,43 @@ btnStop.addEventListener('click', async () => {
 
 btnXray.addEventListener('click', async () => {
     try {
-        showToast("Generating Config...");
         const res = await fetch('/api/generate_xray', { method: 'POST' });
-        const data = await res.json();
-        if (data.status === 'success') {
-            showToast("optimized_config.json generated!");
+        if (res.ok) {
+            window.location.href = '/api/download_config';
+            showToast("Config ready for 3x-ui!");
         } else {
-            showToast(data.message);
+            const data = await res.json();
+            showToast(data.message || "Failed to generate");
         }
     } catch (e) {
         showToast("Error generating config");
     }
 });
+
+// Modal Logic
+const modal = document.getElementById('settings-modal');
+const btnSettings = document.getElementById('btn-settings');
+const spanClose = document.getElementsByClassName('close-btn')[0];
+const btnSaveSettings = document.getElementById('btn-save-settings');
+
+btnSettings.onclick = function() {
+    modal.classList.add('show');
+}
+
+spanClose.onclick = function() {
+    modal.classList.remove('show');
+}
+
+btnSaveSettings.onclick = function() {
+    modal.classList.remove('show');
+    showToast("Settings saved. Press Start to apply.");
+}
+
+window.onclick = function(event) {
+    if (event.target == modal) {
+        modal.classList.remove('show');
+    }
+}
 
 // Poll every 1.5 seconds
 statusInterval = setInterval(fetchStatus, 1500);

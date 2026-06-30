@@ -98,6 +98,11 @@ dashboard_state = {
     'instances': {}
 }
 
+# Admin Configs
+CONFIG_PING_INTERVAL = 60
+CONFIG_RAM_LIMIT_MB = 15
+CONFIG_BW_LIMIT_KB = 0
+
 QUEUE_LOCK = threading.Lock()
 
 class TorInstance:
@@ -161,11 +166,17 @@ class TorInstance:
             'ClientUseIPv6': '0',
             'ClientPreferIPv6ORPort': '0'
         }
+        config['UseEntryGuards'] = '0'
         
+        config['MaxMemInQueues'] = f'{CONFIG_RAM_LIMIT_MB} MB'
+        if CONFIG_BW_LIMIT_KB > 0:
+            config['BandwidthRate'] = f'{CONFIG_BW_LIMIT_KB} KBytes'
+            config['BandwidthBurst'] = f'{CONFIG_BW_LIMIT_KB * 2} KBytes'
+            
         if HARDWARE_TIER == 'LOW':
-            config['MaxMemInQueues'] = '15 MB'
             config['NumCPUs'] = '1'
             config['AvoidDiskWrites'] = '1'
+
         elif HARDWARE_TIER == 'MID':
             config['MaxMemInQueues'] = '40 MB'
             config['NumCPUs'] = '2'
@@ -358,9 +369,7 @@ def scheduler_worker(worker_id):
                     instance_to_check.next_check_time = time.time() + 10
                 else:
                     dashboard_state['instances'][instance_to_check.country]['status'] = "🟢 Optimized"
-                    # Smart delay based on tier
-                    delay = 120 if HARDWARE_TIER == 'LOW' else 60
-                    instance_to_check.next_check_time = time.time() + delay
+                    instance_to_check.next_check_time = time.time() + CONFIG_PING_INTERVAL
             else:
                 instance_to_check.consecutive_failures += 1
                 dashboard_state['instances'][instance_to_check.country]['ping'] = "Timeout"
@@ -485,8 +494,15 @@ def discover_exit_countries(tor_cmd):
         
     return country_counts, country_fingerprints
 
-def start_network_thread(max_instances):
-    dashboard_state['status'] = 'running'
+def start_network_thread(max_instances, ping_interval, ram_limit_mb, bandwidth_limit_kb, worker_count):
+    global global_thread, G_STANDBY_POOL
+    global CONFIG_PING_INTERVAL, CONFIG_RAM_LIMIT_MB, CONFIG_BW_LIMIT_KB
+    
+    CONFIG_PING_INTERVAL = ping_interval
+    CONFIG_RAM_LIMIT_MB = ram_limit_mb
+    CONFIG_BW_LIMIT_KB = bandwidth_limit_kb
+    
+    dashboard_state['status'] = 'discovering'
     
     if HARDWARE_TIER == 'LOW':
         threading.stack_size(262144)
@@ -527,7 +543,7 @@ def start_network_thread(max_instances):
     all_countries = [c[0] for c in sorted_countries]
     active_countries = all_countries[:max_instances]
     
-    global NEXT_SOCKS_PORT, NEXT_CONTROL_PORT, G_STANDBY_POOL, G_COUNTRY_FINGERPRINTS, G_TOR_CMD
+    global NEXT_SOCKS_PORT, NEXT_CONTROL_PORT, G_COUNTRY_FINGERPRINTS, G_TOR_CMD
     G_STANDBY_POOL = all_countries[max_instances:]
     G_COUNTRY_FINGERPRINTS = country_fingerprints
     G_TOR_CMD = tor_cmd
@@ -548,18 +564,22 @@ def start_network_thread(max_instances):
             
     dashboard_state['discovery_msg'] = 'Monitoring instances (Scheduler Active)...'
     
-    # Calculate optimal worker count based on CPU cores
-    worker_count = max(1, min(CPU_CORES * 2, 16))  # 2 workers per core, max 16
-    logger.info(f"Starting {worker_count} scheduler workers for {len(active_countries)} instances.")
+    if worker_count > 0:
+        actual_worker_count = worker_count
+    else:
+        actual_worker_count = max(1, min(CPU_CORES * 2, 16))
+        
+    logger.info(f"Starting {actual_worker_count} scheduler workers for {len(active_countries)} instances.")
     
-    for i in range(worker_count):
+    for i in range(actual_worker_count):
         t = threading.Thread(target=scheduler_worker, args=(i,), daemon=True)
         t.start()
 
-def start_network(max_instances=20):
+def start_network(max_instances=20, ping_interval=60, ram_limit_mb=15, bandwidth_limit_kb=0, worker_count=0):
     if dashboard_state['status'] == 'running':
-        return False
+        return
+        
     global global_thread
-    global_thread = threading.Thread(target=start_network_thread, args=(max_instances,), daemon=True)
+    global_thread = threading.Thread(target=start_network_thread, args=(max_instances, ping_interval, ram_limit_mb, bandwidth_limit_kb, worker_count), daemon=True)
     global_thread.start()
     return True

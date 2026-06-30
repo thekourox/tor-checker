@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tor VPN Dashboard - PasarGuard</title>
+    <title>Tor VPN Dashboard - 3xUI</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -21,6 +21,7 @@
                 <h1>Tor Checker - 3x-UI</h1>
             </div>
             <div class="controls">
+                <button id="btn-settings" class="btn btn-secondary" title="Resource Settings"><i class="fa-solid fa-gear"></i></button>
                 <div class="input-group">
                     <label for="max-countries">Max Countries:</label>
                     <input type="number" id="max-countries" value="20" min="1" max="190" style="width: 60px; padding: 0.3rem; border-radius: 6px; border: 1px solid var(--glass-border); background: rgba(0,0,0,0.3); color: white; margin-right: 1rem;">
@@ -70,6 +71,36 @@
                 </div>
             </div>
         </main>
+    </div>
+
+    <!-- Resource Settings Modal -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content glass-card">
+            <span class="close-btn">&times;</span>
+            <h2><i class="fa-solid fa-sliders"></i> Resource Management</h2>
+            
+            <div class="setting-group">
+                <label for="set-ping">Ping Interval (Seconds) <span class="setting-hint">Higher = Less CPU</span></label>
+                <input type="number" id="set-ping" value="60" min="5" max="300">
+            </div>
+
+            <div class="setting-group">
+                <label for="set-ram">Tor RAM Limit (MB) <span class="setting-hint">Per Node (e.g. 15)</span></label>
+                <input type="number" id="set-ram" value="15" min="2" max="100">
+            </div>
+
+            <div class="setting-group">
+                <label for="set-bw">Bandwidth Limit (KB/s) <span class="setting-hint">0 = Unlimited</span></label>
+                <input type="number" id="set-bw" value="0" min="0" max="10000">
+            </div>
+
+            <div class="setting-group">
+                <label for="set-workers">Scheduler Workers <span class="setting-hint">0 = Auto (Based on CPU)</span></label>
+                <input type="number" id="set-workers" value="0" min="0" max="32">
+            </div>
+            
+            <button id="btn-save-settings" class="btn btn-primary" style="width: 100%; margin-top: 1rem;">Save Settings</button>
+        </div>
     </div>
 
     <!-- Notification Toast -->

@@ -33,16 +33,25 @@ async def get_status():
 
 class StartConfig(BaseModel):
     max_instances: int = 20
+    ping_interval: int = 60
+    ram_limit_mb: int = 15
+    bandwidth_limit_kb: int = 0
+    worker_count: int = 0
 
 @app.post("/api/start")
-async def start_network(config: StartConfig = StartConfig()):
+async def start_network_api(config: StartConfig):
     if core.dashboard_state['status'] == 'running':
-        return {"status": "error", "message": "Network is already running"}
-    
-    # Reset instances to empty to clear old dashboard
+        return {"status": "error", "message": "Already running"}
+        
     core.dashboard_state['instances'] = {}
-    core.start_network(config.max_instances)
-    return {"status": "success", "message": "Network starting..."}
+    core.start_network(
+        max_instances=config.max_instances,
+        ping_interval=config.ping_interval,
+        ram_limit_mb=config.ram_limit_mb,
+        bandwidth_limit_kb=config.bandwidth_limit_kb,
+        worker_count=config.worker_count
+    )
+    return {"status": "success", "message": "Network startup initiated"}
 
 @app.post("/api/stop")
 async def stop_network():
