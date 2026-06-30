@@ -1,7 +1,7 @@
 #!/bin/bash
 
 echo "=============================================================="
-echo "   Tor VPN Backend Dashboard Setup (Linux)"
+echo "   Tor VPN Backend Web Panel (Linux)"
 echo "=============================================================="
 echo ""
 
@@ -65,6 +65,8 @@ fi
 
 echo "Step 2: Cleaning up any hanging background processes..."
 systemctl stop tor > /dev/null 2>&1
+pkill -9 -f "python api.py" > /dev/null 2>&1
+pkill -9 -f "python3 api.py" > /dev/null 2>&1
 pkill -9 -f "python tor_manager.py" > /dev/null 2>&1
 pkill -9 -f "python3 tor_manager.py" > /dev/null 2>&1
 pkill -9 -x "tor" > /dev/null 2>&1
@@ -75,6 +77,7 @@ rm -f tor_fingerprints_cache.json > /dev/null 2>&1
 sleep 3
 echo ""
 
-echo "Step 3: Launching Interactive Dashboard..."
+echo "Step 3: Launching Web Panel (FastAPI)..."
+echo "The panel will be available at http://127.0.0.1:54321 (accessible via SSH tunnel)"
 ulimit -n 65535 > /dev/null 2>&1
-python3 tor_manager.py
+python3 api.py

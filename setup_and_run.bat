@@ -1,6 +1,6 @@
 @echo off
 echo ==============================================================
-echo   Tor VPN Backend Dashboard Setup (Windows)
+echo   Tor VPN Backend Web Panel (Windows)
 echo ==============================================================
 echo.
 
@@ -22,7 +22,8 @@ echo Step 2: Cleaning up any hanging Tor processes...
 taskkill /F /IM tor.exe >nul 2>&1
 echo.
 
-echo Step 3: Launching Interactive Dashboard...
-python tor_manager.py
+echo Step 3: Launching Web Panel (FastAPI)...
+echo The panel will be available at http://127.0.0.1:54321
+python api.py
 
 pause

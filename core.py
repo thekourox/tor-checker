@@ -1,0 +1,565 @@
+import os
+import time
+import signal
+import threading
+import logging
+import requests
+import stem.process
+from stem.control import Controller
+from stem import Signal
+import shutil
+import platform
+import json
+import re
+import psutil
+import random
+import socket
+socket.setdefaulttimeout(20)
+
+# Setup File Logging ONLY (No console spam)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.FileHandler("manager_logs.txt", mode='w', encoding='utf-8')]
+)
+logger = logging.getLogger("TorManager")
+
+TEST_URL = "https://cloudflare.com/cdn-cgi/trace"
+SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=100000" # 100KB payload
+TIMEOUT = 15
+LATENCY_THRESHOLD = 8.0
+SPEED_THRESHOLD_KBS = 5.0
+PORT_LOCK = threading.Lock()
+NEXT_SOCKS_PORT = 9050
+NEXT_CONTROL_PORT = 10050
+G_STANDBY_POOL = []
+G_COUNTRY_FINGERPRINTS = {}
+G_TOR_CMD = "tor"
+
+def spawn_country(country_code):
+    global NEXT_SOCKS_PORT, NEXT_CONTROL_PORT
+    with PORT_LOCK:
+        s = NEXT_SOCKS_PORT
+        c = NEXT_CONTROL_PORT
+        NEXT_SOCKS_PORT += 1
+        NEXT_CONTROL_PORT += 1
+        
+    data_dir = os.path.join(os.getcwd(), "tor_data", country_code)
+    fingerprints = G_COUNTRY_FINGERPRINTS.get(country_code, [])
+    
+    instance = TorInstance(
+        country=country_code,
+        socks_port=s,
+        control_port=c,
+        data_dir=data_dir,
+        tor_cmd=G_TOR_CMD,
+        available_fingerprints=fingerprints
+    )
+    instances.append(instance)
+    
+    try:
+        with PORT_LOCK:
+            mapping = {}
+            if os.path.exists("port_mapping.json"):
+                with open("port_mapping.json", "r") as f:
+                    mapping = json.load(f)
+            mapping[str(s)] = country_code
+            with open("port_mapping.json", "w") as f:
+                json.dump(mapping, f, indent=4)
+    except:
+        pass
+        
+    threading.Thread(target=instance.start, daemon=True).start()
+
+def detect_hardware_tier():
+    try:
+        ram_gb = psutil.virtual_memory().total / (1024**3)
+        cores = psutil.cpu_count(logical=True) or 2
+    except:
+        ram_gb = 4.0
+        cores = 2
+        
+    tier = 'HIGH'
+    if ram_gb < 6.0 or cores <= 2:
+        tier = 'LOW'
+    elif ram_gb < 12.0 or cores <= 4:
+        tier = 'MID'
+        
+    return tier, cores, ram_gb
+
+HARDWARE_TIER, CPU_CORES, RAM_GB = detect_hardware_tier()
+
+# Global state for the API
+dashboard_state = {
+    'status': 'stopped', # stopped, discovering, spawning, running
+    'phase': 'idle',
+    'discovery_msg': 'Ready to start.',
+    'discovery_progress': 0,
+    'instances': {}
+}
+
+QUEUE_LOCK = threading.Lock()
+
+class TorInstance:
+    def __init__(self, country, socks_port, control_port, data_dir, tor_cmd, available_fingerprints):
+        self.country = country
+        self.socks_port = socks_port
+        self.control_port = control_port
+        self.data_dir = data_dir
+        self.tor_cmd = tor_cmd
+        self.available_fingerprints = available_fingerprints
+        self.fingerprint_index = 0
+        
+        self.process = None
+        self.active = False
+        
+        # Scheduler fields
+        self.next_check_time = time.time() + 15  # Give it 15s to bootstrap initially
+        self.currently_checking = False
+        self.consecutive_failures = 0
+
+        
+        # Init dashboard state
+        dashboard_state['instances'][self.country] = {
+            'port': str(self.socks_port),
+            'ip': '...',
+            'ip_location': '...',
+            'ping': '...',
+            'speed': '...',
+            'status': '🟡 Bootstrapping...'
+        }
+        
+    def start(self):
+        logger.info(f"[{self.country}] Starting Tor instance on SOCKS {self.socks_port}, Control {self.control_port}...")
+        
+        if os.path.exists(self.data_dir):
+            shutil.rmtree(self.data_dir, ignore_errors=True)
+        os.makedirs(self.data_dir, exist_ok=True)
+        
+        discovery_data_dir = os.path.join(os.getcwd(), "tor_data", "discovery")
+        if os.path.exists(discovery_data_dir):
+            for filename in os.listdir(discovery_data_dir):
+                if filename.startswith("cached-"):
+                    src = os.path.join(discovery_data_dir, filename)
+                    dst = os.path.join(self.data_dir, filename)
+                    try:
+                        if os.path.isfile(src):
+                            shutil.copy2(src, dst)
+                    except Exception:
+                        pass
+        
+        bind_ip = '0.0.0.0' if platform.system() == 'Linux' else '127.0.0.1'
+        config = {
+            'SocksPort': f'{bind_ip}:{self.socks_port}',
+            'ControlPort': f'127.0.0.1:{self.control_port}',
+            'CookieAuthentication': '1',
+            'DataDirectory': self.data_dir.replace('\\', '/'),
+            'StrictNodes': '1',
+            'Log': 'NOTICE stdout',
+            'GeoIPFile': os.path.join(os.getcwd(), 'data', 'geoip').replace('\\', '/'),
+            'GeoIPv6File': os.path.join(os.getcwd(), 'data', 'geoip6').replace('\\', '/'),
+            'ClientUseIPv6': '0',
+            'ClientPreferIPv6ORPort': '0'
+        }
+        
+        if HARDWARE_TIER == 'LOW':
+            config['MaxMemInQueues'] = '15 MB'
+            config['NumCPUs'] = '1'
+            config['AvoidDiskWrites'] = '1'
+        elif HARDWARE_TIER == 'MID':
+            config['MaxMemInQueues'] = '40 MB'
+            config['NumCPUs'] = '2'
+        
+        if self.available_fingerprints:
+            best_fingerprint = self.available_fingerprints[0]
+            self.fingerprint_index = 1
+            config['ExitNodes'] = f'${best_fingerprint}'
+            logger.info(f"[{self.country}] Using optimal starting fingerprint: {best_fingerprint}")
+        else:
+            config['ExitNodes'] = f'{{{self.country}}}'
+
+        def handle_init_msg(line):
+            match = re.search(r'Bootstrapped (\d+)%', line)
+            if match:
+                dashboard_state['instances'][self.country]['status'] = f"🟡 Bootstrapping {match.group(1)}%"
+            logger.info(f"[{self.country}] {line}")
+
+        try:
+            self.process = stem.process.launch_tor_with_config(
+                config=config,
+                tor_cmd=self.tor_cmd,
+                take_ownership=False,
+                init_msg_handler=handle_init_msg,
+                timeout=None
+            )
+            self.active = True
+            dashboard_state['instances'][self.country]['status'] = "🟢 Online. Testing..."
+            logger.info(f"[{self.country}] Tor instance successfully started and bootstrapped.")
+
+            def drain_stdout(stream):
+                try:
+                    for _ in stream:
+                        pass
+                except:
+                    pass
+            if self.process and self.process.stdout:
+                threading.Thread(target=drain_stdout, args=(self.process.stdout,), daemon=True).start()
+        except Exception as e:
+            logger.error(f"[{self.country}] Failed to start Tor: {e}")
+            err_msg = str(e).split('\\n')[0][:30]
+            dashboard_state['instances'][self.country]['status'] = f"🔴 {err_msg}"
+            self.active = False
+            
+    def request_new_ip(self, reason):
+        logger.info(f"[{self.country}] Requesting new IP. Reason: {reason}")
+        
+        if self.fingerprint_index < len(self.available_fingerprints):
+            best_fingerprint = self.available_fingerprints[self.fingerprint_index]
+            self.fingerprint_index += 1
+            dashboard_state['instances'][self.country]['status'] = f"🟡 Optimizing ({best_fingerprint[:8]})..."
+            logger.info(f"[{self.country}] Auto-healing using specific high-bandwidth fingerprint: {best_fingerprint}")
+            try:
+                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
+                    controller.authenticate()
+                    controller.set_conf('ExitNodes', f'${best_fingerprint}')
+                    controller.signal(Signal.NEWNYM)
+                time.sleep(3)
+            except Exception as e:
+                logger.error(f"[{self.country}] Failed to SETCONF: {e}")
+                err_msg = str(e).split('\\n')[0][:30]
+                dashboard_state['instances'][self.country]['status'] = f"🔴 Opt Fail: {err_msg}"
+        else:
+            dashboard_state['instances'][self.country]['status'] = "🟡 Auto-Healing (Random)..."
+            try:
+                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
+                    controller.authenticate()
+                    controller.set_conf('ExitNodes', f'{{{self.country}}}')
+                    controller.signal(Signal.NEWNYM)
+                time.sleep(3)
+            except Exception as e:
+                logger.error(f"[{self.country}] Failed to send NEWNYM: {e}")
+                err_msg = str(e).split('\\n')[0][:30]
+                dashboard_state['instances'][self.country]['status'] = f"🔴 Opt Fail: {err_msg}"
+            
+    def stop(self):
+        self.active = False
+        if self.process:
+            logger.info(f"[{self.country}] Stopping Tor instance...")
+            try:
+                self.process.kill()
+                self.process.wait()
+            except Exception as e:
+                logger.error(f"[{self.country}] Error while stopping process: {e}")
+            logger.info(f"[{self.country}] Tor instance stopped.")
+
+def get_current_ip(proxies):
+    try:
+        r = requests.get("https://api.ipify.org", proxies=proxies, timeout=5)
+        if r.status_code == 200:
+            return r.text.strip()
+    except:
+        pass
+    return "Unknown IP"
+
+def measure_speed_and_ping(instance):
+    proxies = {
+        'http': f'socks5h://127.0.0.1:{instance.socks_port}',
+        'https': f'socks5h://127.0.0.1:{instance.socks_port}'
+    }
+    ttfb = 0
+    speed_kbs = 0
+    success = False
+    actual_country = None
+    
+    try:
+        start_time = time.time()
+        resp = requests.get('https://1.1.1.1/cdn-cgi/trace', proxies=proxies, timeout=15)
+        resp.raise_for_status()
+        ttfb = time.time() - start_time
+        
+        # Extract country code from loc=...
+        actual_country = None
+        for line in resp.text.splitlines():
+            if line.startswith('loc='):
+                actual_country = line.split('=')[1]
+                break
+                
+        if not actual_country or actual_country.lower() == 'xx':
+            try:
+                ipinfo_resp = requests.get('https://ipinfo.io/country', proxies=proxies, timeout=10)
+                if ipinfo_resp.status_code == 200:
+                    actual_country = ipinfo_resp.text.strip()
+            except:
+                pass
+        
+        success = True
+    except Exception as e:
+        logger.debug(f"[{instance.country}] Ping failed: {e}")
+        return False, 0, 0, None
+        
+    try:
+        start_time = time.time()
+        r = requests.get(SPEED_TEST_URL, proxies=proxies, timeout=TIMEOUT)
+        if r.status_code == 200:
+            elapsed = time.time() - start_time
+            size_kb = len(r.content) / 1024
+            speed_kbs = size_kb / elapsed
+    except Exception as e:
+        pass
+        
+    return success, ttfb, speed_kbs, actual_country
+
+def scheduler_worker(worker_id):
+    logger.info(f"Worker {worker_id} started.")
+    while dashboard_state['status'] == 'running':
+        now = time.time()
+        instance_to_check = None
+        
+        with QUEUE_LOCK:
+            for inst in instances:
+                if not inst.currently_checking and inst.active and now >= inst.next_check_time:
+                    instance_to_check = inst
+                    inst.currently_checking = True
+                    break
+                    
+        if not instance_to_check:
+            time.sleep(1)
+            continue
+            
+        try:
+            success, ttfb, speed_kbs, actual_country = measure_speed_and_ping(instance_to_check)
+            
+            if success:
+                instance_to_check.consecutive_failures = 0
+                actual_country_str = actual_country.upper() if actual_country else "Unknown"
+                if actual_country and actual_country != instance_to_check.country:
+                    logger.warning(f"[{instance_to_check.country}] Mismatched Country! Expected {instance_to_check.country}, got {actual_country}.")
+                    instance_to_check.request_new_ip(f"Wrong Country ({actual_country_str})")
+                    instance_to_check.next_check_time = time.time() + 10
+                    continue
+                    
+                proxies = {
+                    'http': f'socks5h://127.0.0.1:{instance_to_check.socks_port}',
+                    'https': f'socks5h://127.0.0.1:{instance_to_check.socks_port}'
+                }
+                current_ip = get_current_ip(proxies)
+                dashboard_state['instances'][instance_to_check.country]['ip'] = current_ip
+                dashboard_state['instances'][instance_to_check.country]['ip_location'] = actual_country_str
+                dashboard_state['instances'][instance_to_check.country]['ping'] = f"{ttfb:.2f} s"
+                dashboard_state['instances'][instance_to_check.country]['speed'] = f"{speed_kbs:.1f} KB/s"
+                
+                logger.info(f"[{instance_to_check.country}] Proxy healthy. IP: {current_ip}, Ping: {ttfb:.2f}s, Speed: {speed_kbs:.1f} KB/s")
+                
+                if ttfb > LATENCY_THRESHOLD:
+                    instance_to_check.request_new_ip(f"High Ping ({ttfb:.2f}s)")
+                    instance_to_check.next_check_time = time.time() + 10
+                elif speed_kbs < SPEED_THRESHOLD_KBS:
+                    instance_to_check.request_new_ip(f"Low Speed ({speed_kbs:.1f} KB/s)")
+                    instance_to_check.next_check_time = time.time() + 10
+                else:
+                    dashboard_state['instances'][instance_to_check.country]['status'] = "🟢 Optimized"
+                    # Smart delay based on tier
+                    delay = 120 if HARDWARE_TIER == 'LOW' else 60
+                    instance_to_check.next_check_time = time.time() + delay
+            else:
+                instance_to_check.consecutive_failures += 1
+                dashboard_state['instances'][instance_to_check.country]['ping'] = "Timeout"
+                dashboard_state['instances'][instance_to_check.country]['speed'] = "0.0 KB/s"
+                
+                if instance_to_check.consecutive_failures >= 5:
+                    dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Fatal Error. Rebooting Node..."
+                    logger.warning(f"[{instance_to_check.country}] Rebooting Tor instance entirely.")
+                    instance_to_check.stop()
+                    instance_to_check.consecutive_failures = 0
+                    threading.Thread(target=instance_to_check.start, daemon=True).start()
+                    instance_to_check.next_check_time = time.time() + 20
+                else:
+                    dashboard_state['instances'][instance_to_check.country]['status'] = f"🔴 Failed ({instance_to_check.consecutive_failures}/5). Auto-Healing..."
+                    instance_to_check.request_new_ip("Connection Timeout")
+                    instance_to_check.next_check_time = time.time() + 10
+        except Exception as e:
+            logger.error(f"Worker {worker_id} error: {e}")
+        finally:
+            instance_to_check.currently_checking = False
+
+instances = []
+global_thread = None
+
+def stop_all():
+    dashboard_state['status'] = 'stopped'
+    dashboard_state['phase'] = 'idle'
+    dashboard_state['discovery_msg'] = 'Network stopped.'
+    for instance in instances:
+        instance.stop()
+    instances.clear()
+    
+    if platform.system() == 'Windows':
+        try:
+            os.system('taskkill /F /IM tor.exe >nul 2>&1')
+        except:
+            pass
+    else:
+        try:
+            os.system('pkill -x tor >/dev/null 2>&1')
+        except:
+            pass
+
+def discover_exit_countries(tor_cmd):
+    dashboard_state['phase'] = 'discovery'
+    dashboard_state['discovery_msg'] = "Starting local Tor discovery process..."
+    
+    geoip_path = os.path.join(os.getcwd(), "data", "geoip").replace('\\\\', '/')
+    geoip6_path = os.path.join(os.getcwd(), "data", "geoip6").replace('\\\\', '/')
+    
+    discovery_data_dir = os.path.join(os.getcwd(), "tor_data", "discovery")
+    if os.path.exists(discovery_data_dir):
+        shutil.rmtree(discovery_data_dir, ignore_errors=True)
+    os.makedirs(discovery_data_dir, exist_ok=True)
+    
+    config = {
+        'SocksPort': '127.0.0.1:auto',
+        'ControlPort': '127.0.0.1:9049',
+        'CookieAuthentication': '1',
+        'DataDirectory': discovery_data_dir.replace('\\\\', '/'),
+        'ClientUseIPv6': '0',
+        'ClientPreferIPv6ORPort': '0'
+    }
+    
+    if os.path.exists(geoip_path) and os.path.exists(geoip6_path):
+        config['GeoIPFile'] = geoip_path
+        config['GeoIPv6File'] = geoip6_path
+
+    def handle_init_msg(line):
+        match = re.search(r'Bootstrapped (\d+)%', line)
+        if match:
+            dashboard_state['discovery_progress'] = int(match.group(1))
+            dashboard_state['discovery_msg'] = f"Bootstrapping Discovery Node: {match.group(1)}%"
+
+    try:
+        discovery_process = stem.process.launch_tor_with_config(
+            config=config,
+            tor_cmd=tor_cmd,
+            take_ownership=False,
+            init_msg_handler=handle_init_msg,
+            timeout=None
+        )
+    except Exception as e:
+        error_msg = f"Error launching Tor ({tor_cmd}): {str(e)}"
+        logger.error(error_msg)
+        dashboard_state['discovery_msg'] = error_msg
+        return {}, {}
+    
+    country_fingerprints = {}
+    country_counts = {}
+    
+    dashboard_state['discovery_msg'] = "Node Bootstrapped. Parsing Global Network Consensus..."
+    
+    try:
+        with Controller.from_port(address='127.0.0.1', port=9049) as controller:
+            controller.authenticate()
+            statuses = controller.get_network_statuses()
+            for desc in statuses:
+                if 'Exit' in desc.flags and 'Valid' in desc.flags:
+                    try:
+                        country_code = controller.get_info(f"ip-to-country/{desc.address}")
+                        if country_code and country_code != '??':
+                            country_code = country_code.lower()
+                            
+                            bw = desc.bandwidth if desc.bandwidth else 0
+                            if country_code not in country_fingerprints:
+                                country_fingerprints[country_code] = []
+                            country_fingerprints[country_code].append((desc.fingerprint, bw))
+                            country_counts[country_code] = country_counts.get(country_code, 0) + 1
+                    except Exception:
+                        pass
+                        
+            for c in country_fingerprints:
+                country_fingerprints[c].sort(key=lambda x: x[1], reverse=True)
+                country_fingerprints[c] = [x[0] for x in country_fingerprints[c]]
+                
+    except Exception as e:
+        logger.error(f"Discovery failed: {e}")
+    finally:
+        discovery_process.kill()
+        discovery_process.wait()
+        
+    return country_counts, country_fingerprints
+
+def start_network_thread(max_instances):
+    dashboard_state['status'] = 'running'
+    
+    if HARDWARE_TIER == 'LOW':
+        threading.stack_size(262144)
+    elif HARDWARE_TIER == 'MID':
+        threading.stack_size(524288)
+        
+    tor_cmd = "tor"
+    if platform.system() == 'Windows':
+        possible_paths = [
+            os.path.join(os.getcwd(), "Tor", "tor.exe"),
+            os.path.join(os.getcwd(), "tor", "tor.exe"),
+            os.path.join(os.getcwd(), "tor.exe")
+        ]
+    else:
+        possible_paths = [
+            os.path.join(os.getcwd(), "tor", "tor"),
+            "/usr/bin/tor",
+            "/usr/local/bin/tor"
+        ]
+    for p in possible_paths:
+        if os.path.exists(p):
+            tor_cmd = p
+            break
+
+    try:
+        country_counts, country_fingerprints = discover_exit_countries(tor_cmd)
+        if not country_counts:
+            dashboard_state['status'] = 'stopped'
+            if not dashboard_state['discovery_msg'].startswith('Error'):
+                dashboard_state['discovery_msg'] = 'Discovery failed. No exit nodes found.'
+            return
+    except Exception as e:
+        dashboard_state['status'] = 'stopped'
+        dashboard_state['discovery_msg'] = f"Fatal Error: {str(e)}"
+        return
+        
+    sorted_countries = sorted(country_counts.items(), key=lambda x: x[1], reverse=True)
+    all_countries = [c[0] for c in sorted_countries]
+    active_countries = all_countries[:max_instances]
+    
+    global NEXT_SOCKS_PORT, NEXT_CONTROL_PORT, G_STANDBY_POOL, G_COUNTRY_FINGERPRINTS, G_TOR_CMD
+    G_STANDBY_POOL = all_countries[max_instances:]
+    G_COUNTRY_FINGERPRINTS = country_fingerprints
+    G_TOR_CMD = tor_cmd
+    NEXT_SOCKS_PORT = 9050
+    NEXT_CONTROL_PORT = 10050
+
+    if os.path.exists("port_mapping.json"):
+        try:
+            os.remove("port_mapping.json")
+        except:
+            pass
+
+    dashboard_state['phase'] = 'monitoring'
+    dashboard_state['discovery_msg'] = f'Spawning {len(active_countries)} instances on {CPU_CORES} Cores ({RAM_GB:.1f}GB RAM)...'
+    
+    for country in active_countries:
+        spawn_country(country)
+            
+    dashboard_state['discovery_msg'] = 'Monitoring instances (Scheduler Active)...'
+    
+    # Calculate optimal worker count based on CPU cores
+    worker_count = max(1, min(CPU_CORES * 2, 16))  # 2 workers per core, max 16
+    logger.info(f"Starting {worker_count} scheduler workers for {len(active_countries)} instances.")
+    
+    for i in range(worker_count):
+        t = threading.Thread(target=scheduler_worker, args=(i,), daemon=True)
+        t.start()
+
+def start_network(max_instances=20):
+    if dashboard_state['status'] == 'running':
+        return False
+    global global_thread
+    global_thread = threading.Thread(target=start_network_thread, args=(max_instances,), daemon=True)
+    global_thread.start()
+    return True

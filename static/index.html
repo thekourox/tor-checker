@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tor VPN Dashboard - PasarGuard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="background-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+    </div>
+
+    <div class="dashboard-container">
+        <header class="glass-header">
+            <div class="logo">
+                <i class="fa-solid fa-shield-halved"></i>
+                <h1>Tor Checker - 3x-UI</h1>
+            </div>
+            <div class="controls">
+                <div class="input-group">
+                    <label for="max-countries">Max Countries:</label>
+                    <input type="number" id="max-countries" value="20" min="1" max="190" style="width: 60px; padding: 0.3rem; border-radius: 6px; border: 1px solid var(--glass-border); background: rgba(0,0,0,0.3); color: white; margin-right: 1rem;">
+                </div>
+                <button id="btn-start" class="btn btn-primary"><i class="fa-solid fa-play"></i> Start</button>
+                <button id="btn-stop" class="btn btn-danger"><i class="fa-solid fa-stop"></i> Stop</button>
+                <button id="btn-xray" class="btn btn-secondary"><i class="fa-solid fa-file-export"></i> 3x-ui Config</button>
+            </div>
+        </header>
+
+        <main>
+            <div class="status-panel glass-panel">
+                <div class="status-header">
+                    <h2><i class="fa-solid fa-network-wired"></i> Global Status</h2>
+                    <span id="badge-status" class="badge badge-idle">IDLE</span>
+                </div>
+                <div class="status-content">
+                    <p id="discovery-msg">Ready to start.</p>
+                    <div class="progress-bar-container">
+                        <div id="discovery-progress" class="progress-bar" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="instances-panel glass-panel">
+                <div class="panel-header">
+                    <h2><i class="fa-solid fa-server"></i> Proxy Instances</h2>
+                    <span id="instance-count" class="count-badge">0 / 190</span>
+                </div>
+                <div class="table-container">
+                    <table id="instances-table">
+                        <thead>
+                            <tr>
+                                <th>Country</th>
+                                <th>SOCKS Port</th>
+                                <th>Current IP</th>
+                                <th>IP Location</th>
+                                <th>Ping (TTFB)</th>
+                                <th>Speed</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="instances-body">
+                            <!-- Rows will be populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast hidden">
+        <div class="toast-content">
+            <i class="fa-solid fa-circle-info"></i>
+            <span id="toast-msg">Notification</span>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
