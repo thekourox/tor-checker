@@ -178,7 +178,7 @@ class TorInstance:
             'CookieAuthentication': '1',
             'DataDirectory': self.data_dir.replace('\\', '/'),
             'StrictNodes': '1',
-            'Log': 'NOTICE stdout',
+            'Log': 'ERR stdout',
             'GeoIPFile': os.path.join(os.getcwd(), 'data', 'geoip').replace('\\', '/'),
             'GeoIPv6File': os.path.join(os.getcwd(), 'data', 'geoip6').replace('\\', '/'),
             'ClientUseIPv6': '0',
@@ -187,21 +187,23 @@ class TorInstance:
             'ConnectionPadding': '0',
             'ReducedConnectionPadding': '1',
             'EntryNodes': '{nl},{de},{fr},{gb},{us},{ca}',
-            'ConfluxEnabled': '1'
+            'KeepalivePeriod': '120',
+            'CircuitStreamTimeout': '15',
+            'ClientOnly': '1',
+            'FetchDirInfoEarly': '0',
+            'FetchDirInfoExtraEarly': '0',
+            'FetchUselessDescriptors': '0'
         }
         
-        config['MaxMemInQueues'] = f'{CONFIG_RAM_LIMIT_MB} MB'
+        # Override with ultra-low memory footprints
+        config['MaxMemInQueues'] = '5 MB'
         if CONFIG_BW_LIMIT_KB > 0:
             config['BandwidthRate'] = f'{CONFIG_BW_LIMIT_KB} KBytes'
             config['BandwidthBurst'] = f'{CONFIG_BW_LIMIT_KB * 2} KBytes'
             
-        if HARDWARE_TIER == 'LOW':
-            config['NumCPUs'] = '1'
-            config['AvoidDiskWrites'] = '1'
-
-        elif HARDWARE_TIER == 'MID':
-            config['MaxMemInQueues'] = '40 MB'
-            config['NumCPUs'] = '2'
+        # Extreme Resource Minimization for all tiers
+        config['NumCPUs'] = '1'
+        config['AvoidDiskWrites'] = '1'
         
         if self.available_fingerprints:
             best_fingerprint = self.available_fingerprints[0]
@@ -276,6 +278,15 @@ class TorInstance:
             
     def stop(self):
         self.active = False
+        
+        # Free Python HTTP Session Memory
+        if getattr(self, 'session', None):
+            try:
+                self.session.close()
+                self.session = None
+            except:
+                pass
+                
         if self.process:
             logger.info(f"[{self.country}] Stopping Tor instance...")
             try:
@@ -296,7 +307,7 @@ def measure_ping(instance):
         s.settimeout(10.0)
         
         ping_start = time.time()
-        s.connect(("1.1.1.1", 80))
+        s.connect(("8.8.8.8", 443))
         ping_end = time.time()
         s.close()
         
@@ -311,7 +322,10 @@ def measure_ping(instance):
                 'http': f'socks5h://127.0.0.1:{instance.socks_port}',
                 'https': f'socks5h://127.0.0.1:{instance.socks_port}'
             }
-            resp = requests.get('https://1.1.1.1/cdn-cgi/trace', proxies=proxies, timeout=10)
+            if getattr(instance, 'session', None) is None:
+                instance.session = requests.Session()
+                
+            resp = instance.session.get('https://1.1.1.1/cdn-cgi/trace', proxies=proxies, timeout=10)
             if resp.status_code == 200:
                 for line in resp.text.splitlines():
                     if line.startswith('loc='):
@@ -319,7 +333,7 @@ def measure_ping(instance):
                         break
                         
             if not actual_country or actual_country in ['T1', 'XX', 'A1']:
-                ip_resp = requests.get('https://ipinfo.io/country', proxies=proxies, timeout=10)
+                ip_resp = instance.session.get('https://ipinfo.io/country', proxies=proxies, timeout=10)
                 if ip_resp.status_code == 200:
                     actual_country = ip_resp.text.strip().upper()
         except:
