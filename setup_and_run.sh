@@ -35,7 +35,7 @@ if ! command -v pip3 >/dev/null 2>&1; then
 fi
 
 echo "Step 1: Installing Python requirements..."
-pip3 install -r requirements.txt --break-system-packages || pip3 install -r requirements.txt || { echo "[Error] Failed to install requirements!"; exit 1; }
+pip3 install -r requirements.txt --break-system-packages || { echo "[Error] Failed to install requirements!"; exit 1; }
 echo "[OK] Requirements installed successfully."
 echo ""
 
