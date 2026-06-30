@@ -44,6 +44,15 @@ class StartConfig(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
+    # Kill any zombie tor processes from previous crashes
+    try:
+        if os.name == 'nt':
+            subprocess.run(["taskkill", "/F", "/IM", "tor.exe"], capture_output=True)
+        else:
+            subprocess.run(["killall", "tor"], capture_output=True)
+    except:
+        pass
+
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
