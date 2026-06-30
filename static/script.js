@@ -105,13 +105,19 @@ btnStart.addEventListener('click', async () => {
         const setRam = document.getElementById('set-ram').value || 15;
         const setBw = document.getElementById('set-bw').value || 0;
         const setWorkers = document.getElementById('set-workers').value || 0;
+        
+        const checkboxes = document.querySelectorAll('.country-cb:checked');
+        let selectedArr = [];
+        checkboxes.forEach(cb => selectedArr.push(cb.value));
+        const setCountries = selectedArr.join(",");
 
         const payload = {
             max_instances: parseInt(maxCountries),
             ping_interval: parseInt(setPing),
             ram_limit_mb: parseInt(setRam),
             bandwidth_limit_kb: parseInt(setBw),
-            worker_count: parseInt(setWorkers)
+            worker_count: parseInt(setWorkers),
+            selected_countries: setCountries
         };
 
         const res = await fetch('/api/start', {
@@ -169,7 +175,7 @@ spanClose.onclick = function() {
 
 btnSaveSettings.onclick = function() {
     modal.classList.remove('show');
-    showToast("Settings saved. Press Start to apply.");
+    showToast("Settings saved. Press Start to apply (Live Reload supported).");
 }
 
 window.onclick = function(event) {
@@ -178,6 +184,73 @@ window.onclick = function(event) {
     }
 }
 
+function getFlagEmoji(countryCode) {
+    if(!countryCode || countryCode.length !== 2) return '🏳️';
+    const codePoints = countryCode.toUpperCase().split('').map(char => 127397 + char.charCodeAt(0));
+    return String.fromCodePoint(...codePoints);
+}
+
+const btnScan = document.getElementById('btn-scan-countries');
+const listContainer = document.getElementById('countries-list');
+
+let savedCountries = [];
+
+btnScan.addEventListener('click', async () => {
+    btnScan.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Scanning (15s)...';
+    btnScan.disabled = true;
+    listContainer.innerHTML = '<span style="color: var(--text-muted); font-size: 0.8rem; grid-column: span 2;">Downloading live Tor network consensus... please wait.</span>';
+    
+    try {
+        const res = await fetch('/api/scan_countries');
+        const data = await res.json();
+        
+        if(data.status === 'success') {
+            listContainer.innerHTML = '';
+            data.countries.forEach(code => {
+                const isChecked = savedCountries.includes(code.toLowerCase()) ? 'checked' : '';
+                const flag = getFlagEmoji(code);
+                const html = `
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer; padding: 4px; border-radius: 4px; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='transparent'">
+                        <input type="checkbox" class="country-cb" value="${code}" ${isChecked}>
+                        <span>${flag} ${code.toUpperCase()}</span>
+                    </label>
+                `;
+                listContainer.insertAdjacentHTML('beforeend', html);
+            });
+        } else {
+            listContainer.innerHTML = `<span style="color: var(--danger); grid-column: span 2;">Scan failed: ${data.message}</span>`;
+        }
+    } catch(e) {
+        listContainer.innerHTML = `<span style="color: var(--danger); grid-column: span 2;">Network error during scan.</span>`;
+    }
+    
+    btnScan.innerHTML = '<i class="fa-solid fa-satellite-dish"></i> Live Scan';
+    btnScan.disabled = false;
+});
+
+async function loadSettings() {
+    try {
+        const res = await fetch('/api/settings');
+        if (res.ok) {
+            const data = await res.json();
+            document.getElementById('max-countries').value = data.max_instances || 20;
+            document.getElementById('set-ping').value = data.ping_interval || 60;
+            document.getElementById('set-ram').value = data.ram_limit_mb || 15;
+            document.getElementById('set-bw').value = data.bandwidth_limit_kb || 0;
+            document.getElementById('set-workers').value = data.worker_count || 0;
+            if (data.selected_countries) {
+                savedCountries = data.selected_countries.split(',').map(c => c.trim().toLowerCase());
+                if(savedCountries.length > 0) {
+                    listContainer.innerHTML = `<span style="color: var(--primary); font-size: 0.8rem; grid-column: span 2;">${savedCountries.length} countries saved. Click Scan to load full list.</span>`;
+                }
+            }
+        }
+    } catch (e) {
+        console.error("Failed to load settings");
+    }
+}
+
 // Poll every 1.5 seconds
+loadSettings();
 statusInterval = setInterval(fetchStatus, 1500);
 fetchStatus();

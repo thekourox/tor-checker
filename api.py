@@ -31,15 +31,80 @@ async def get_index():
 async def get_status():
     return core.dashboard_state
 
+CONFIG_FILE = "config.json"
+
 class StartConfig(BaseModel):
     max_instances: int = 20
     ping_interval: int = 60
     ram_limit_mb: int = 15
     bandwidth_limit_kb: int = 0
     worker_count: int = 0
+    selected_countries: str = ""
+
+@app.on_event("startup")
+async def startup_event():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                data = json.load(f)
+                config = StartConfig(**data)
+                core.start_network(
+                    max_instances=config.max_instances,
+                    ping_interval=config.ping_interval,
+                    ram_limit_mb=config.ram_limit_mb,
+                    bandwidth_limit_kb=config.bandwidth_limit_kb,
+                    worker_count=config.worker_count,
+                    selected_countries=config.selected_countries
+                )
+        except:
+            pass
+
+@app.get("/api/settings")
+async def get_settings():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return StartConfig().dict()
+
+@app.get("/api/scan_countries")
+async def scan_countries():
+    # If already populated, return immediately
+    if core.G_COUNTRY_FINGERPRINTS:
+        return {"status": "success", "countries": list(core.G_COUNTRY_FINGERPRINTS.keys())}
+        
+    import platform
+    tor_cmd = "tor"
+    if platform.system() == 'Windows':
+        possible_paths = [
+            os.path.join(os.getcwd(), "Tor", "tor.exe"),
+            os.path.join(os.getcwd(), "tor", "tor.exe"),
+            os.path.join(os.getcwd(), "tor.exe")
+        ]
+    else:
+        possible_paths = [
+            os.path.join(os.getcwd(), "tor", "tor"),
+            "/usr/bin/tor",
+            "/usr/local/bin/tor"
+        ]
+    for p in possible_paths:
+        if os.path.exists(p):
+            tor_cmd = p
+            break
+            
+    try:
+        country_counts, _ = core.discover_exit_countries(tor_cmd)
+        return {"status": "success", "countries": list(country_counts.keys())}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/api/start")
 async def start_network_api(config: StartConfig):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config.dict(), f, indent=4)
+        
     if core.dashboard_state['status'] == 'running':
         return {"status": "error", "message": "Already running"}
         
@@ -49,7 +114,8 @@ async def start_network_api(config: StartConfig):
         ping_interval=config.ping_interval,
         ram_limit_mb=config.ram_limit_mb,
         bandwidth_limit_kb=config.bandwidth_limit_kb,
-        worker_count=config.worker_count
+        worker_count=config.worker_count,
+        selected_countries=config.selected_countries
     )
     return {"status": "success", "message": "Network startup initiated"}
 

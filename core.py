@@ -37,38 +37,53 @@ G_STANDBY_POOL = []
 G_COUNTRY_FINGERPRINTS = {}
 G_TOR_CMD = "tor"
 
-def spawn_country(country_code):
-    global NEXT_SOCKS_PORT, NEXT_CONTROL_PORT
-    with PORT_LOCK:
-        s = NEXT_SOCKS_PORT
-        c = NEXT_CONTROL_PORT
-        NEXT_SOCKS_PORT += 1
-        NEXT_CONTROL_PORT += 1
+COUNTRY_PORTS_FILE = "country_ports.json"
+
+def get_port_for_country(country_code):
+    mapping = {}
+    if os.path.exists(COUNTRY_PORTS_FILE):
+        try:
+            with open(COUNTRY_PORTS_FILE, "r") as f:
+                mapping = json.load(f)
+        except:
+            pass
+            
+    if country_code in mapping:
+        return mapping[country_code]['socks'], mapping[country_code]['control']
         
-    data_dir = os.path.join(os.getcwd(), "tor_data", country_code)
-    fingerprints = G_COUNTRY_FINGERPRINTS.get(country_code, [])
+    used_socks = [v['socks'] for v in mapping.values()]
+    used_control = [v['control'] for v in mapping.values()]
     
-    instance = TorInstance(
-        country=country_code,
-        socks_port=s,
-        control_port=c,
-        data_dir=data_dir,
-        tor_cmd=G_TOR_CMD,
-        available_fingerprints=fingerprints
-    )
-    instances.append(instance)
+    new_socks = max(used_socks) + 1 if used_socks else 9050
+    new_control = max(used_control) + 1 if used_control else 10050
+    
+    while new_socks in used_socks:
+        new_socks += 1
+    while new_control in used_control:
+        new_control += 1
+        
+    mapping[country_code] = {'socks': new_socks, 'control': new_control}
     
     try:
-        with PORT_LOCK:
-            mapping = {}
-            if os.path.exists("port_mapping.json"):
-                with open("port_mapping.json", "r") as f:
-                    mapping = json.load(f)
-            mapping[str(s)] = country_code
-            with open("port_mapping.json", "w") as f:
-                json.dump(mapping, f, indent=4)
+        with open(COUNTRY_PORTS_FILE, "w") as f:
+            json.dump(mapping, f, indent=4)
     except:
         pass
+        
+    return new_socks, new_control
+
+def spawn_country(country_code):
+    global instances
+    
+    socks_port, control_port = get_port_for_country(country_code)
+    
+    data_dir = os.path.join(os.getcwd(), 'tor_data', f'data_{country_code}')
+    fps = G_COUNTRY_FINGERPRINTS.get(country_code, [])
+    
+    instance = TorInstance(country_code, socks_port, control_port, data_dir, G_TOR_CMD, fps)
+    
+    with QUEUE_LOCK:
+        instances.append(instance)
         
     threading.Thread(target=instance.start, daemon=True).start()
 
@@ -512,7 +527,7 @@ def discover_exit_countries(tor_cmd):
         
     return country_counts, country_fingerprints
 
-def start_network_thread(max_instances, ping_interval, ram_limit_mb, bandwidth_limit_kb, worker_count):
+def start_network_thread(max_instances, ping_interval, ram_limit_mb, bandwidth_limit_kb, worker_count, selected_countries):
     global global_thread, G_STANDBY_POOL
     global CONFIG_PING_INTERVAL, CONFIG_RAM_LIMIT_MB, CONFIG_BW_LIMIT_KB
     
@@ -558,11 +573,28 @@ def start_network_thread(max_instances, ping_interval, ram_limit_mb, bandwidth_l
         return
         
     sorted_countries = sorted(country_counts.items(), key=lambda x: x[1], reverse=True)
-    all_countries = [c[0] for c in sorted_countries]
-    active_countries = all_countries[:max_instances]
+    all_available_countries = [c[0] for c in sorted_countries]
     
+    active_countries = []
+    
+    # First add preferred countries
+    if selected_countries:
+        preferred = [c.strip().lower() for c in selected_countries.split(",") if c.strip()]
+        for p in preferred:
+            if p in all_available_countries and p not in active_countries:
+                active_countries.append(p)
+                if len(active_countries) >= max_instances:
+                    break
+                    
+    # Then fill the rest
+    for c in all_available_countries:
+        if len(active_countries) >= max_instances:
+            break
+        if c not in active_countries:
+            active_countries.append(c)
+            
     global NEXT_SOCKS_PORT, NEXT_CONTROL_PORT, G_COUNTRY_FINGERPRINTS, G_TOR_CMD
-    G_STANDBY_POOL = all_countries[max_instances:]
+    G_STANDBY_POOL = [c for c in all_available_countries if c not in active_countries]
     G_COUNTRY_FINGERPRINTS = country_fingerprints
     G_TOR_CMD = tor_cmd
     NEXT_SOCKS_PORT = 9050
@@ -589,15 +621,61 @@ def start_network_thread(max_instances, ping_interval, ram_limit_mb, bandwidth_l
         
     logger.info(f"Starting {actual_worker_count} scheduler workers for {len(active_countries)} instances.")
     
+    dashboard_state['status'] = 'running'
+    
     for i in range(actual_worker_count):
         t = threading.Thread(target=scheduler_worker, args=(i,), daemon=True)
         t.start()
 
-def start_network(max_instances=20, ping_interval=60, ram_limit_mb=15, bandwidth_limit_kb=0, worker_count=0):
+def start_network(max_instances=20, ping_interval=60, ram_limit_mb=15, bandwidth_limit_kb=0, worker_count=0, selected_countries=""):
+    global CONFIG_PING_INTERVAL, CONFIG_RAM_LIMIT_MB, CONFIG_BW_LIMIT_KB
+    
+    CONFIG_PING_INTERVAL = ping_interval
+    CONFIG_RAM_LIMIT_MB = ram_limit_mb
+    CONFIG_BW_LIMIT_KB = bandwidth_limit_kb
+
     if dashboard_state['status'] == 'running':
-        return
+        logger.info("Live Reload Triggered: Diffing countries...")
+        preferred = [c.strip().lower() for c in selected_countries.split(",") if c.strip()]
+        
+        # We need all available countries sorted by count to fill the rest
+        all_available = list(G_COUNTRY_FINGERPRINTS.keys())
+        all_available.sort(key=lambda x: len(G_COUNTRY_FINGERPRINTS[x]), reverse=True)
+        
+        desired_countries = []
+        for p in preferred:
+            if p in all_available and p not in desired_countries:
+                desired_countries.append(p)
+                if len(desired_countries) >= max_instances:
+                    break
+                    
+        for c in all_available:
+            if len(desired_countries) >= max_instances:
+                break
+            if c not in desired_countries:
+                desired_countries.append(c)
+                
+        with QUEUE_LOCK:
+            current_countries = [inst.country for inst in instances]
+            
+            # Remove instances not in desired
+            for inst in instances[:]:
+                if inst.country not in desired_countries:
+                    logger.info(f"Live Reload: Removing {inst.country}")
+                    inst.stop()
+                    instances.remove(inst)
+                    if inst.country in dashboard_state['instances']:
+                        del dashboard_state['instances'][inst.country]
+                        
+            # Add instances in desired that are not current
+            for c in desired_countries:
+                if c not in current_countries:
+                    logger.info(f"Live Reload: Adding {c}")
+                    spawn_country(c)
+                    
+        return True
         
     global global_thread
-    global_thread = threading.Thread(target=start_network_thread, args=(max_instances, ping_interval, ram_limit_mb, bandwidth_limit_kb, worker_count), daemon=True)
+    global_thread = threading.Thread(target=start_network_thread, args=(max_instances, ping_interval, ram_limit_mb, bandwidth_limit_kb, worker_count, selected_countries), daemon=True)
     global_thread.start()
     return True

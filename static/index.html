@@ -98,6 +98,18 @@
                 <label for="set-workers">Scheduler Workers <span class="setting-hint">0 = Auto (Based on CPU)</span></label>
                 <input type="number" id="set-workers" value="0" min="0" max="32">
             </div>
+
+            <div class="setting-group" style="margin-top: 10px;">
+                <label>Preferred Countries 
+                    <button id="btn-scan-countries" class="btn btn-secondary" style="font-size: 0.7rem; padding: 0.2rem 0.5rem; margin-left: 10px;">
+                        <i class="fa-solid fa-satellite-dish"></i> Live Scan
+                    </button>
+                </label>
+                <div id="countries-list" style="max-height: 200px; overflow-y: auto; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 6px; padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <!-- Checkboxes injected here -->
+                    <span style="color: var(--text-muted); font-size: 0.8rem; grid-column: span 2;">Click 'Live Scan' to discover online nodes...</span>
+                </div>
+            </div>
             
             <button id="btn-save-settings" class="btn btn-primary" style="width: 100%; margin-top: 1rem;">Save Settings</button>
         </div>
