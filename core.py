@@ -161,16 +161,19 @@ class TorInstance:
         
     def _circuit_warmup_worker(self):
         while True:
-            time.sleep(10)
+            time.sleep(15)
             if not self.active or not self.process:
                 continue
             try:
                 with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
                     controller.authenticate()
-                    # Count BUILT circuits
-                    built_circuits = [c for c in controller.get_circuits() if c.status == 'BUILT']
-                    if len(built_circuits) < 3:
-                        logger.info(f"[{self.country}] Circuit pool low ({len(built_circuits)}). Pre-building new circuit...")
+                    
+                    all_circuits = controller.get_circuits()
+                    built_circuits = [c for c in all_circuits if c.status == 'BUILT']
+                    pending_circuits = [c for c in all_circuits if c.status in ('LAUNCHED', 'EXTENDED')]
+                    
+                    if len(built_circuits) + len(pending_circuits) < 3:
+                        logger.info(f"[{self.country}] Circuit pool low (Built: {len(built_circuits)}, Pending: {len(pending_circuits)}). Pre-building...")
                         controller.new_circuit()
             except Exception:
                 pass
@@ -220,7 +223,7 @@ class TorInstance:
             
             # Anti-Spike and Stability parameters for v2ray/PasarGuard
             config['MaxCircuitDirtiness'] = '300'    # Rotate circuits every 5m before they degrade
-            config['CircuitBuildTimeout'] = '5'      # Strict 5s build timeout for fast circuits only
+            config['CircuitBuildTimeout'] = '15'     # Relaxed to 15s to prevent circuit thrashing OOM
             config['LearnCircuitBuildTimeout'] = '0' # Disable dynamic learning
             config['EnforceDistinctSubnets'] = '0'   # Relax subnet rules for faster build
             config['CircuitStreamTimeout'] = '300'   # 5 minutes
