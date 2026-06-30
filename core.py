@@ -178,7 +178,7 @@ class TorInstance:
             'CookieAuthentication': '1',
             'DataDirectory': self.data_dir.replace('\\', '/'),
             'StrictNodes': '1',
-            'Log': 'ERR stdout',
+            'Log': 'NOTICE stdout',
             'GeoIPFile': os.path.join(os.getcwd(), 'data', 'geoip').replace('\\', '/'),
             'GeoIPv6File': os.path.join(os.getcwd(), 'data', 'geoip6').replace('\\', '/'),
             'ClientUseIPv6': '0',
@@ -195,8 +195,7 @@ class TorInstance:
             'FetchUselessDescriptors': '0'
         }
         
-        # Override with ultra-low memory footprints
-        config['MaxMemInQueues'] = '5 MB'
+        config['MaxMemInQueues'] = f'{CONFIG_RAM_LIMIT_MB} MB'
         if CONFIG_BW_LIMIT_KB > 0:
             config['BandwidthRate'] = f'{CONFIG_BW_LIMIT_KB} KBytes'
             config['BandwidthBurst'] = f'{CONFIG_BW_LIMIT_KB * 2} KBytes'
