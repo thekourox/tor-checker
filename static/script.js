@@ -184,8 +184,7 @@ window.onclick = function(event) {
 
 function getFlagEmoji(countryCode) {
     if(!countryCode || countryCode.length !== 2) return '🏳️';
-    const codePoints = countryCode.toUpperCase().split('').map(char => 127397 + char.charCodeAt(0));
-    return String.fromCodePoint(...codePoints);
+    return `<img src="https://flagcdn.com/w20/${countryCode.toLowerCase()}.png" alt="${countryCode}" style="width: 20px; vertical-align: middle; margin-right: 5px; border-radius: 2px; box-shadow: 0 0 3px rgba(0,0,0,0.3);">`;
 }
 
 const btnScan = document.getElementById('btn-scan-countries');
