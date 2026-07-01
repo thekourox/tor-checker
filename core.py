@@ -122,8 +122,9 @@ G_STANDBY_POOL = {}
 QUEUE_LOCK = threading.Lock()
 
 G_COUNTRY_FINGERPRINTS = {}
-G_NL_GUARDS = []
+G_HOST_GUARDS = []
 G_TOR_CMD = "tor"
+HOST_COUNTRY = "nl"  # Default fallback
 
 # Load settings from api.py configuration files
 CONFIG_PING_INTERVAL = 30
@@ -242,8 +243,8 @@ class TorInstance:
             else:
                 config['ExitNodes'] = f'{{{self.country}}}'
 
-            if G_NL_GUARDS:
-                g_fps = [f"${fp}" for fp in G_NL_GUARDS]
+            if G_HOST_GUARDS:
+                g_fps = [f"${fp}" for fp in G_HOST_GUARDS]
                 config['EntryNodes'] = ",".join(g_fps)
                 
             config['CircuitBuildTimeout'] = '5'
@@ -619,7 +620,19 @@ def discover_exit_countries(tor_cmd):
                 country_fingerprints[c] = [x[0] for x in country_fingerprints[c]]
                 
         try:
-            req_guards = urllib.request.Request("https://onionoo.torproject.org/details?type=relay&flag=Guard&running=true&country=nl")
+            # 1. Dynamically detect the physical host server's country
+            import urllib.request
+            global HOST_COUNTRY
+            try:
+                ip_req = urllib.request.Request("https://ipinfo.io/country")
+                with urllib.request.urlopen(ip_req, timeout=5) as ip_resp:
+                    HOST_COUNTRY = ip_resp.read().decode().strip().lower()
+                logger.info(f"Dynamically detected host server country: {HOST_COUNTRY.upper()}")
+            except Exception as e:
+                logger.warning(f"Failed to detect host country, defaulting to {HOST_COUNTRY.upper()}")
+
+            # 2. Fetch Guard nodes for that specific country
+            req_guards = urllib.request.Request(f"https://onionoo.torproject.org/details?type=relay&flag=Guard&running=true&country={HOST_COUNTRY}")
             with urllib.request.urlopen(req_guards, timeout=15) as resp:
                 g_data = json.loads(resp.read().decode())
                 guards = []
@@ -627,11 +640,16 @@ def discover_exit_countries(tor_cmd):
                     bw = r.get('observed_bandwidth', 0)
                     guards.append((r.get('fingerprint'), bw))
                 guards.sort(key=lambda x: x[1], reverse=True)
-                global G_NL_GUARDS
-                G_NL_GUARDS = [x[0] for x in guards[:30]]
-                logger.info(f"Fetched {len(G_NL_GUARDS)} NL guard nodes for low latency.")
+                
+                global G_HOST_GUARDS
+                G_HOST_GUARDS = [x[0] for x in guards[:30]]
+                
+                if G_HOST_GUARDS:
+                    logger.info(f"Fetched {len(G_HOST_GUARDS)} Guard nodes from {HOST_COUNTRY.upper()} for localized low-latency entry.")
+                else:
+                    logger.warning(f"No active Guard nodes found in {HOST_COUNTRY.upper()}. Tor will use global EntryNodes.")
         except Exception as ge:
-            logger.warning(f"Failed to fetch NL guards: {ge}")
+            logger.warning(f"Failed to fetch local guards: {ge}")
                 
     except Exception as api_e:
         logger.warning(f"Onionoo API failed: {api_e}. Falling back to local Tor consensus...")
