@@ -109,21 +109,28 @@ def detect_hardware_tier():
 
 HARDWARE_TIER, CPU_CORES, RAM_GB = detect_hardware_tier()
 
-# Global state for the API
+# Global variables
+instances = []
 dashboard_state = {
-    'status': 'stopped', # stopped, discovering, spawning, running
-    'phase': 'idle',
-    'discovery_msg': 'Ready to start.',
-    'discovery_progress': 0,
-    'instances': {}
+    'status': 'stopped',
+    'discovery_msg': 'Waiting to start...',
+    'instances': {},
+    'ping_history': {} 
 }
 
-# Admin Configs
+G_STANDBY_POOL = {}
+QUEUE_LOCK = threading.Lock()
+
+G_COUNTRY_FINGERPRINTS = {}
+G_NL_GUARDS = []
+G_TOR_CMD = "tor"
+
+# Load settings from api.py configuration files
 CONFIG_PING_INTERVAL = 30
 CONFIG_RAM_LIMIT_MB = 15
 CONFIG_BW_LIMIT_KB = 0
 
-QUEUE_LOCK = threading.Lock()
+COUNTRY_PORTS_FILE = "country_ports.json"
 
 class TorInstance:
     def __init__(self, country, socks_port, control_port, data_dir, tor_cmd, available_fingerprints):
@@ -223,16 +230,10 @@ class TorInstance:
             
             # Anti-Spike and Stability parameters for v2ray/PasarGuard
             config['MaxCircuitDirtiness'] = '86400'  # 24 hours (prevents sudden ping jumps)
-            config['CircuitBuildTimeout'] = '15'     # Relaxed to 15s to prevent circuit thrashing OOM
-            config['LearnCircuitBuildTimeout'] = '0' # Disable dynamic learning
-            config['EnforceDistinctSubnets'] = '0'   # Relax subnet rules for faster build
             config['CircuitStreamTimeout'] = '300'   # 5 minutes
             config['KeepalivePeriod'] = '60'
             config['ConnectionPadding'] = '0'
             config['ReducedConnectionPadding'] = '1'
-            
-            # Geography constraints removed because the Linux server is missing the GeoIP database.
-            # Using 24-hour circuit lock instead to guarantee no ping spikes after connection.
             
             if self.available_fingerprints:
                 fps = [f"${fp}" for fp in self.available_fingerprints[:30]]
@@ -240,6 +241,13 @@ class TorInstance:
                 logger.info(f"[{self.country}] Assigned {len(fps)} strict fingerprints for routing.")
             else:
                 config['ExitNodes'] = f'{{{self.country}}}'
+
+            if G_NL_GUARDS:
+                g_fps = [f"${fp}" for fp in G_NL_GUARDS]
+                config['EntryNodes'] = ",".join(g_fps)
+                
+            config['CircuitBuildTimeout'] = '5'
+            config['LearnCircuitBuildTimeout'] = '0'
 
             def handle_init_msg(line):
                 match = re.search(r'Bootstrapped (\d+)%', line)
@@ -609,6 +617,21 @@ def discover_exit_countries(tor_cmd):
             for c in country_fingerprints:
                 country_fingerprints[c].sort(key=lambda x: x[1], reverse=True)
                 country_fingerprints[c] = [x[0] for x in country_fingerprints[c]]
+                
+        try:
+            req_guards = urllib.request.Request("https://onionoo.torproject.org/details?type=relay&flag=Guard&running=true&country=nl")
+            with urllib.request.urlopen(req_guards, timeout=15) as resp:
+                g_data = json.loads(resp.read().decode())
+                guards = []
+                for r in g_data.get('relays', []):
+                    bw = r.get('observed_bandwidth', 0)
+                    guards.append((r.get('fingerprint'), bw))
+                guards.sort(key=lambda x: x[1], reverse=True)
+                global G_NL_GUARDS
+                G_NL_GUARDS = [x[0] for x in guards[:30]]
+                logger.info(f"Fetched {len(G_NL_GUARDS)} NL guard nodes for low latency.")
+        except Exception as ge:
+            logger.warning(f"Failed to fetch NL guards: {ge}")
                 
     except Exception as api_e:
         logger.warning(f"Onionoo API failed: {api_e}. Falling back to local Tor consensus...")
