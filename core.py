@@ -235,12 +235,9 @@ class TorInstance:
             # Using 24-hour circuit lock instead to guarantee no ping spikes after connection.
             
             if self.available_fingerprints:
-                if getattr(self, 'fingerprint_index', 0) >= len(self.available_fingerprints):
-                    self.fingerprint_index = 0
-                idx = getattr(self, 'fingerprint_index', 0)
-                best_fingerprint = self.available_fingerprints[idx]
-                config['ExitNodes'] = f'${best_fingerprint}'
-                logger.info(f"[{self.country}] Using starting fingerprint [{idx}/{len(self.available_fingerprints)}]: {best_fingerprint}")
+                fps = [f"${fp}" for fp in self.available_fingerprints[:30]]
+                config['ExitNodes'] = ",".join(fps)
+                logger.info(f"[{self.country}] Assigned {len(fps)} strict fingerprints for routing.")
             else:
                 config['ExitNodes'] = f'{{{self.country}}}'
 
@@ -323,32 +320,26 @@ class TorInstance:
             threading.Thread(target=self.start, daemon=True).start()
             return
 
-        if not self.available_fingerprints:
+        if self.available_fingerprints:
+            dashboard_state['instances'][self.country]['status'] = f"🟡 Optimizing (NEWNYM)..."
+            logger.info(f"[{self.country}] Auto-healing using NEWNYM on existing fingerprint pool")
+            try:
+                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
+                    controller.authenticate()
+                    controller.signal(Signal.NEWNYM)
+                time.sleep(3)
+            except Exception as e:
+                logger.error(f"[{self.country}] Failed to signal NEWNYM: {e}")
+                self.stop()
+                time.sleep(1)
+                threading.Thread(target=self.start, daemon=True).start()
+        else:
             dashboard_state['instances'][self.country]['status'] = f"🟡 Optimizing (Fallback)..."
             logger.info(f"[{self.country}] Auto-healing using fallback country ExitNodes")
             try:
                 with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
                     controller.authenticate()
                     controller.set_conf('ExitNodes', f'{{{self.country}}}')
-                    controller.signal(Signal.NEWNYM)
-                time.sleep(3)
-            except Exception as e:
-                logger.error(f"[{self.country}] Failed to SETCONF: {e}")
-                self.stop()
-                time.sleep(1)
-                threading.Thread(target=self.start, daemon=True).start()
-        else:
-            if self.fingerprint_index >= len(self.available_fingerprints):
-                self.fingerprint_index = 0
-                
-            best_fingerprint = self.available_fingerprints[self.fingerprint_index]
-            self.fingerprint_index += 1
-            dashboard_state['instances'][self.country]['status'] = f"🟡 Optimizing ({best_fingerprint[:8]})..."
-            logger.info(f"[{self.country}] Auto-healing using specific high-bandwidth fingerprint: {best_fingerprint}")
-            try:
-                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
-                    controller.authenticate()
-                    controller.set_conf('ExitNodes', f'${best_fingerprint}')
                     controller.signal(Signal.NEWNYM)
                 time.sleep(3)
             except Exception as e:
