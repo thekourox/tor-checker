@@ -36,13 +36,22 @@ CONFIG_FILE = "config.json"
 
 def get_auto_config():
     tier = core.HARDWARE_TIER
-    if tier == 'LOW':
+    if tier == 'ULTRA_LOW':
+        return {
+            'max_instances': 40,
+            'ping_interval': 60,
+            'ram_limit_mb': 5,
+            'bandwidth_limit_kb': 0,
+            'worker_count': 5,
+            'selected_countries': ""
+        }
+    elif tier == 'LOW':
         return {
             'max_instances': 15,
             'ping_interval': 60,
             'ram_limit_mb': 15,
-            'bandwidth_limit_kb': 200,
-            'worker_count': 2,
+            'bandwidth_limit_kb': 0,
+            'worker_count': 5,
             'selected_countries': ""
         }
     elif tier == 'MID':
@@ -164,10 +173,12 @@ async def start_network_api(config: StartConfig):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config.dict(), f, indent=4)
         
-    if core.dashboard_state['status'] == 'running':
-        return {"status": "error", "message": "Already running"}
+    if core.dashboard_state['status'] == 'discovering':
+        return {"status": "error", "message": "Discovery in progress. Please wait."}
         
-    core.dashboard_state['instances'] = {}
+    if core.dashboard_state['status'] != 'running':
+        core.dashboard_state['instances'] = {}
+        
     core.start_network(
         max_instances=config.max_instances,
         ping_interval=config.ping_interval,

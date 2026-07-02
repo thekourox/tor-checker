@@ -27,6 +27,7 @@ logging.basicConfig(
     handlers=[logging.FileHandler("manager_logs.txt", mode='a', encoding='utf-8')]
 )
 logger = logging.getLogger("TorManager")
+logging.getLogger('stem').setLevel(logging.WARNING)
 
 TEST_URL = "https://1.1.1.1/cdn-cgi/trace"
 SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=100000" # 100KB payload
@@ -34,6 +35,7 @@ TIMEOUT = 15
 LATENCY_THRESHOLD = 8.0
 SPEED_THRESHOLD_KBS = 5.0
 PORT_LOCK = threading.Lock()
+PING_SEMAPHORE = threading.Semaphore(2)
 NEXT_SOCKS_PORT = 9050
 NEXT_CONTROL_PORT = 10050
 G_STANDBY_POOL = []
@@ -89,7 +91,13 @@ def spawn_country(country_code):
         instances.append(instance)
         
     threading.Thread(target=instance.start, daemon=True).start()
-    time.sleep(1) # Staggered Bootstrapping delay
+    
+    stagger_delay = 1
+    if HARDWARE_TIER == 'ULTRA_LOW':
+        stagger_delay = 5
+    elif HARDWARE_TIER == 'LOW':
+        stagger_delay = 2
+    time.sleep(stagger_delay) # Staggered Bootstrapping delay
 
 def detect_hardware_tier():
     try:
@@ -100,7 +108,9 @@ def detect_hardware_tier():
         cores = 2
         
     tier = 'HIGH'
-    if ram_gb < 6.0 or cores <= 2:
+    if ram_gb < 2.5 or cores <= 1:
+        tier = 'ULTRA_LOW'
+    elif ram_gb < 6.0 or cores <= 2:
         tier = 'LOW'
     elif ram_gb < 12.0 or cores <= 4:
         tier = 'MID'
@@ -127,11 +137,12 @@ G_TOR_CMD = "tor"
 HOST_COUNTRY = "nl"  # Default fallback
 
 # Load settings from api.py configuration files
-CONFIG_PING_INTERVAL = 30
+CONFIG_PING_INTERVAL = 10
 CONFIG_RAM_LIMIT_MB = 15
 CONFIG_BW_LIMIT_KB = 0
 
 COUNTRY_PORTS_FILE = "country_ports.json"
+GLOBAL_SESSION = None
 
 class TorInstance:
     def __init__(self, country, socks_port, control_port, data_dir, tor_cmd, available_fingerprints):
@@ -155,10 +166,6 @@ class TorInstance:
         # Concurrency and Zombie protection
         self.start_lock = threading.Lock()
         
-        # Start Circuit Warmup Thread
-        threading.Thread(target=self._circuit_warmup_worker, daemon=True).start()
-
-        
         # Init dashboard state
         dashboard_state['instances'][self.country] = {
             'port': str(self.socks_port),
@@ -166,25 +173,6 @@ class TorInstance:
             'ping': '...',
             'status': '🟡 Bootstrapping...'
         }
-        
-    def _circuit_warmup_worker(self):
-        while True:
-            time.sleep(15)
-            if not self.active or not self.process:
-                continue
-            try:
-                with Controller.from_port(address='127.0.0.1', port=self.control_port) as controller:
-                    controller.authenticate()
-                    
-                    all_circuits = controller.get_circuits()
-                    built_circuits = [c for c in all_circuits if c.status == 'BUILT']
-                    pending_circuits = [c for c in all_circuits if c.status in ('LAUNCHED', 'EXTENDED')]
-                    
-                    if len(built_circuits) + len(pending_circuits) < 3:
-                        logger.info(f"[{self.country}] Circuit pool low (Built: {len(built_circuits)}, Pending: {len(pending_circuits)}). Pre-building...")
-                        controller.new_circuit()
-            except Exception:
-                pass
 
     def start(self):
         if not self.start_lock.acquire(blocking=False):
@@ -216,18 +204,25 @@ class TorInstance:
                 'ControlPort': f'127.0.0.1:{self.control_port}',
                 'CookieAuthentication': '1',
                 'DataDirectory': self.data_dir.replace('\\', '/'),
-                'StrictNodes': '1',
                 'Log': 'NOTICE stdout',
             }
             
-            config['MaxMemInQueues'] = f'{CONFIG_RAM_LIMIT_MB} MB'
+            if HARDWARE_TIER == 'ULTRA_LOW':
+                config['MaxMemInQueues'] = '8 MB'
+            else:
+                config['MaxMemInQueues'] = f'{CONFIG_RAM_LIMIT_MB} MB'
+                
             if CONFIG_BW_LIMIT_KB > 0:
                 config['BandwidthRate'] = f'{CONFIG_BW_LIMIT_KB} KBytes'
                 config['BandwidthBurst'] = f'{CONFIG_BW_LIMIT_KB * 2} KBytes'
                 
             # Extreme Resource Minimization for all tiers
+            config['ClientOnly'] = '1'
             config['NumCPUs'] = '1'
             config['AvoidDiskWrites'] = '1'
+            config['FetchDirInfoEarly'] = '0'
+            config['FetchDirInfoExtraEarly'] = '0'
+            config['FetchUselessDescriptors'] = '0'
             
             # Anti-Spike and Stability parameters for v2ray/PasarGuard
             config['MaxCircuitDirtiness'] = '86400'  # 24 hours (prevents sudden ping jumps)
@@ -247,7 +242,11 @@ class TorInstance:
                 g_fps = [f"${fp}" for fp in G_HOST_GUARDS]
                 config['EntryNodes'] = ",".join(g_fps)
                 
-            config['CircuitBuildTimeout'] = '5'
+            # Relax timeout for 1-core CPUs to finish crypto handshakes without death-looping
+            if HARDWARE_TIER == 'ULTRA_LOW':
+                config['CircuitBuildTimeout'] = '15'
+            else:
+                config['CircuitBuildTimeout'] = '5'
             config['LearnCircuitBuildTimeout'] = '0'
 
             def handle_init_msg(line):
@@ -268,6 +267,17 @@ class TorInstance:
                 text=True,
                 creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
             )
+            
+            # OS-Level Process Priority De-escalation
+            if self.process and self.process.pid:
+                try:
+                    if platform.system() == 'Windows':
+                        os.system(f'wmic process where processid={self.process.pid} CALL setpriority 16384 >nul 2>&1')
+                    else:
+                        os.system(f'renice 10 -p {self.process.pid} >/dev/null 2>&1')
+                    logger.info(f"[{self.country}] Applied OS priority de-escalation to PID {self.process.pid}")
+                except Exception as e:
+                    pass
             
             start_time = time.time()
             bootstrapped = False
@@ -313,6 +323,7 @@ class TorInstance:
             if self.process:
                 try:
                     self.process.kill()
+                    self.process.wait(timeout=5)
                 except: pass
             self.active = False
             self.process = None
@@ -360,55 +371,47 @@ class TorInstance:
     def stop(self):
         self.active = False
         
-        # Free Python HTTP Session Memory
-        if getattr(self, 'session', None):
-            try:
-                self.session.close()
-                self.session = None
-            except:
-                pass
-                
         if self.process:
             logger.info(f"[{self.country}] Stopping Tor instance...")
             try:
                 self.process.kill()
-                self.process.wait()
+                self.process.wait(timeout=5)
             except Exception as e:
                 logger.error(f"[{self.country}] Error while stopping process: {e}")
             logger.info(f"[{self.country}] Tor instance stopped.")
+            self.process = None
 
 def measure_ping(instance):
     ping_ms = 0
-    success = False
     actual_country = None
+    success = False
     
     try:
-        s = socks.socksocket()
-        s.set_proxy(socks.SOCKS5, "127.0.0.1", instance.socks_port)
-        s.settimeout(10.0)
+        proxies = {
+            'http': f'socks5h://127.0.0.1:{instance.socks_port}',
+            'https': f'socks5h://127.0.0.1:{instance.socks_port}'
+        }
         
+        if not hasattr(instance, 'session'):
+            import requests.adapters
+            instance.session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1)
+            instance.session.mount('http://', adapter)
+            instance.session.mount('https://', adapter)
+            
+        # 1. Measure Ping using HTTP Keep-Alive
         ping_start = time.time()
-        s.connect(("8.8.8.8", 443))
+        resp = instance.session.get('http://cp.cloudflare.com/generate_204', proxies=proxies, timeout=10)
         ping_end = time.time()
-        s.close()
         
-        ping_ms = int((ping_end - ping_start) * 1000)
-        success = True
-    except Exception as e:
-        success = False
-        
-    if success:
-        try:
-            proxies = {
-                'http': f'socks5h://127.0.0.1:{instance.socks_port}',
-                'https': f'socks5h://127.0.0.1:{instance.socks_port}'
-            }
-            if getattr(instance, 'session', None) is None:
-                instance.session = requests.Session()
-                
-            resp = instance.session.get('https://1.1.1.1/cdn-cgi/trace', proxies=proxies, timeout=10)
-            if resp.status_code == 200:
-                for line in resp.text.splitlines():
+        if resp.status_code == 204:
+            ping_ms = int((ping_end - ping_start) * 1000)
+            success = True
+            
+            # 2. Check Location (reusing the same keep-alive session)
+            trace_resp = instance.session.get('https://1.1.1.1/cdn-cgi/trace', proxies=proxies, timeout=10)
+            if trace_resp.status_code == 200:
+                for line in trace_resp.text.splitlines():
                     if line.startswith('loc='):
                         actual_country = line.split('=')[1].upper()
                         break
@@ -417,16 +420,21 @@ def measure_ping(instance):
                 ip_resp = instance.session.get('https://ipinfo.io/country', proxies=proxies, timeout=10)
                 if ip_resp.status_code == 200:
                     actual_country = ip_resp.text.strip().upper()
-        except:
-            pass
+    except Exception as e:
+        success = False
             
     return success, ping_ms, actual_country
 
 def scheduler_worker(worker_id):
+    import gc
     logger.info(f"Worker {worker_id} started.")
     while dashboard_state['status'] == 'running':
         now = time.time()
         instance_to_check = None
+        
+        # Aggressively clean up Python memory
+        if HARDWARE_TIER == 'ULTRA_LOW' and int(now) % 60 == 0:
+            gc.collect()
         
         with QUEUE_LOCK:
             for inst in instances:
@@ -455,7 +463,8 @@ def scheduler_worker(worker_id):
             instance_to_check.currently_checking = False
             continue
         try:
-            success, ping_ms, actual_country = measure_ping(instance_to_check)
+            with PING_SEMAPHORE:
+                success, ping_ms, actual_country = measure_ping(instance_to_check)
             
             with QUEUE_LOCK:
                 if success:
@@ -484,11 +493,14 @@ def scheduler_worker(worker_id):
                             instance_to_check.currently_checking = False
                             continue
                         
+                    if 10000 in instance_to_check.ping_history:
+                        instance_to_check.ping_history.clear()
+                        
                     instance_to_check.ping_history.append(ping_ms)
                     if len(instance_to_check.ping_history) > 3:
                         instance_to_check.ping_history.pop(0)
                         
-                    ema_ping = sum(instance_to_check.ping_history) / len(instance_to_check.ping_history)
+                    ema_ping = sum(instance_to_check.ping_history) / max(1, len(instance_to_check.ping_history))
                         
                     dashboard_state['instances'][instance_to_check.country]['ping'] = f"{int(ema_ping)} ms"
                     dashboard_state['instances'][instance_to_check.country]['status'] = "🟢 Online"
@@ -504,7 +516,7 @@ def scheduler_worker(worker_id):
                     if len(instance_to_check.ping_history) > 3:
                         instance_to_check.ping_history.pop(0)
                         
-                    ema_ping = sum(instance_to_check.ping_history) / len(instance_to_check.ping_history)
+                    ema_ping = sum(instance_to_check.ping_history) / max(1, len(instance_to_check.ping_history))
                     dashboard_state['instances'][instance_to_check.country]['ping'] = "Timeout"
                     
                     if instance_to_check.consecutive_failures >= 3:
@@ -515,8 +527,7 @@ def scheduler_worker(worker_id):
                         instance_to_check.next_check_time = time.time() + 300
                     else:
                         dashboard_state['instances'][instance_to_check.country]['status'] = f"🟡 Timeout. Retrying..."
-                        if ema_ping > (LATENCY_THRESHOLD * 1000):
-                            instance_to_check.request_new_ip(f"Ping Timeout Trend")
+                        # Do NOT request NEWNYM on timeout. It destroys the circuit before it can finish building!
                         instance_to_check.next_check_time = time.time() + 10
 
                     instance_to_check.next_check_time = time.time() + 10
@@ -631,25 +642,68 @@ def discover_exit_countries(tor_cmd):
             except Exception as e:
                 logger.warning(f"Failed to detect host country, defaulting to {HOST_COUNTRY.upper()}")
 
-            # 2. Fetch Guard nodes for that specific country
-            req_guards = urllib.request.Request(f"https://onionoo.torproject.org/details?type=relay&flag=Guard&running=true&country={HOST_COUNTRY}")
-            with urllib.request.urlopen(req_guards, timeout=15) as resp:
-                g_data = json.loads(resp.read().decode())
-                guards = []
-                for r in g_data.get('relays', []):
-                    bw = r.get('observed_bandwidth', 0)
-                    guards.append((r.get('fingerprint'), bw))
-                guards.sort(key=lambda x: x[1], reverse=True)
+            # 2. Fetch Guard nodes for that specific country and its regional neighbors
+            GUARD_FALLBACKS = {
+                'de': ['nl', 'fr', 'ch', 'pl', 'gb'],
+                'nl': ['de', 'fr', 'gb', 'be'],
+                'fr': ['de', 'nl', 'gb', 'es', 'ch'],
+                'sg': ['jp', 'hk', 'kr', 'in'],
+                'us': ['ca', 'mx', 'gb'],
+                'gb': ['nl', 'fr', 'de', 'ie']
+            }
+            
+            target_countries = [HOST_COUNTRY]
+            if HOST_COUNTRY in GUARD_FALLBACKS:
+                target_countries.extend(GUARD_FALLBACKS[HOST_COUNTRY])
                 
-                global G_HOST_GUARDS
-                G_HOST_GUARDS = [x[0] for x in guards[:30]]
-                
-                if G_HOST_GUARDS:
-                    logger.info(f"Fetched {len(G_HOST_GUARDS)} Guard nodes from {HOST_COUNTRY.upper()} for localized low-latency entry.")
-                else:
-                    logger.warning(f"No active Guard nodes found in {HOST_COUNTRY.upper()}. Tor will use global EntryNodes.")
+            guards = []
+            
+            # Fetch for all target countries
+            for tc in target_countries:
+                try:
+                    req_guards = urllib.request.Request(f"https://onionoo.torproject.org/details?type=relay&flag=Guard&running=true&country={tc}")
+                    with urllib.request.urlopen(req_guards, timeout=10) as resp:
+                        g_data = json.loads(resp.read().decode())
+                        for r in g_data.get('relays', []):
+                            bw = r.get('observed_bandwidth', 0)
+                            guards.append((r.get('fingerprint'), bw))
+                except Exception as e:
+                    logger.warning(f"Failed to fetch guards for {tc.upper()}: {e}")
+                    
+            guards.sort(key=lambda x: x[1], reverse=True)
+            
+            global G_HOST_GUARDS
+            G_HOST_GUARDS = [x[0] for x in guards[:30]]
+            
+            if G_HOST_GUARDS:
+                logger.info(f"Fetched {len(G_HOST_GUARDS)} Guard nodes from region {target_countries} for localized low-latency entry.")
+            else:
+                raise Exception("No guards found")
         except Exception as ge:
-            logger.warning(f"Failed to fetch local guards: {ge}")
+            logger.warning(f"Onionoo Guard fetch failed: {ge}. Using local Tor consensus (Kalak-e-Rashti)...")
+            try:
+                from stem.control import Controller
+                local_guards = []
+                with Controller.from_port(address='127.0.0.1', port=9049) as controller:
+                    controller.authenticate()
+                    statuses = controller.get_network_statuses()
+                    for desc in statuses:
+                        if 'Guard' in desc.flags and 'Valid' in desc.flags:
+                            try:
+                                country_code = controller.get_info(f"ip-to-country/{desc.address}")
+                                if country_code and country_code.lower() == HOST_COUNTRY:
+                                    bw = desc.bandwidth if desc.bandwidth else 0
+                                    local_guards.append((desc.fingerprint, bw))
+                            except Exception:
+                                pass
+                local_guards.sort(key=lambda x: x[1], reverse=True)
+                G_HOST_GUARDS = [x[0] for x in local_guards[:30]]
+                if G_HOST_GUARDS:
+                    logger.info(f"Local Consensus: Fetched {len(G_HOST_GUARDS)} Guard nodes for {HOST_COUNTRY.upper()}.")
+                else:
+                    logger.warning(f"Local Consensus: No guards found for {HOST_COUNTRY.upper()}.")
+            except Exception as e2:
+                logger.error(f"Local Consensus Guard fallback failed: {e2}")
                 
     except Exception as api_e:
         logger.warning(f"Onionoo API failed: {api_e}. Falling back to local Tor consensus...")
@@ -698,7 +752,9 @@ def start_network_thread(max_instances, ping_interval, ram_limit_mb, bandwidth_l
     
     dashboard_state['status'] = 'discovering'
     
-    if HARDWARE_TIER == 'LOW':
+    if HARDWARE_TIER == 'ULTRA_LOW':
+        threading.stack_size(131072)
+    elif HARDWARE_TIER == 'LOW':
         threading.stack_size(262144)
     elif HARDWARE_TIER == 'MID':
         threading.stack_size(524288)
@@ -785,7 +841,12 @@ def start_network_thread(max_instances, ping_interval, ram_limit_mb, bandwidth_l
     if worker_count > 0:
         actual_worker_count = worker_count
     else:
-        actual_worker_count = max(1, min(CPU_CORES * 2, 16))
+        if HARDWARE_TIER == 'ULTRA_LOW':
+            actual_worker_count = 5
+        elif HARDWARE_TIER == 'LOW':
+            actual_worker_count = 8
+        else:
+            actual_worker_count = max(1, min(CPU_CORES * 2, 16))
         
     logger.info(f"Starting {actual_worker_count} scheduler workers for {len(active_countries)} instances.")
     
